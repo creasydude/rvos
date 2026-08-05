@@ -1,0 +1,30 @@
+{
+  "name": "rvos",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "brain:test": "tsx brain/self-test.ts"
+  },
+  "dependencies": {
+    "@chakra-ui/react": "^3.36.1",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "better-sqlite3": "^13.0.2",
+    "framer-motion": "^13.0.0",
+    "next": "^16.3.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "technicalindicators": "^3.1.0",
+    "tsx": "^4.23.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/react": "19.2.18",
+    "typescript": "7.0.2"
+  }
+}

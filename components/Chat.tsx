@@ -170,7 +170,7 @@ export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; in
   return (
     <Flex flex="1" h="100vh" flexDir="column" minW="0">
       <Box flex="1" overflowY="auto">
-        <Box maxW="720px" mx="auto" px={4} py={8} spaceY={4}>
+        <Box maxW="1040px" mx="auto" px={4} py={8} spaceY={4}>
           {msgs.length === 0 && (
             <Box py={16} textAlign="center" color="muted">
               <Text fontSize="lg" color="ink">Paste fundamental and/or technical data</Text>
@@ -216,7 +216,7 @@ export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; in
       </Box>
 
       <Box borderTopWidth="1px" borderColor="borderC" bg="bg">
-        <Box maxW="720px" mx="auto" px={4} py={4}>
+        <Box maxW="1040px" mx="auto" px={4} py={4}>
           {paste === null ? (
             <Flex align="center" justify="space-between" gap={3} wrap="wrap">
               <Flex gap={2} wrap="wrap">

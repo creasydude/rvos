@@ -2,6 +2,7 @@
 
 import { Box, Button, Flex, Text, Textarea } from "@chakra-ui/react";
 import { useEffect, useRef, useState } from "react";
+import Markdown from "./Markdown";
 
 export type RoleStatus = { fundamental: boolean; technical: boolean; synthesis: boolean };
 
@@ -199,8 +200,12 @@ export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; in
                   {m.label === "analysis" ? "Analysis" : m.label === "notes" ? (m.kind === "technical" ? "Technical notes" : "Fundamental notes") : ""}
                 </Text>
               )}
-              {m.role === "assistant" && m.label === "analysis" && m.text === "" && busy ? (
-                <Text color="muted" animation="pulse 2s ease-in-out infinite">Analyzing…</Text>
+              {m.role === "assistant" && m.label === "analysis" ? (
+                m.text === "" && busy ? (
+                  <Text color="muted" animation="pulse 2s ease-in-out infinite">Analyzing…</Text>
+                ) : (
+                  <Markdown>{m.text}</Markdown>
+                )
               ) : (
                 m.text
               )}

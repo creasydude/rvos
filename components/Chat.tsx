@@ -53,7 +53,7 @@ function parseSSE(res: Response, onDelta: (d: string) => void): Promise<string> 
   });
 }
 
-export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; initialAnalysis?: string }) {
+export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: RoleStatus; initialAnalysis?: string; onOpenMenu?: () => void }) {
   const [msgs, setMsgs] = useState<Msg[]>(
     initialAnalysis
       ? [{ role: "assistant", text: initialAnalysis, label: "analysis" }]
@@ -169,8 +169,26 @@ export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; in
 
   return (
     <Flex flex="1" h="100vh" flexDir="column" minW="0">
+      {/* Mobile top bar with hamburger (hidden on md+) */}
+      <Flex
+        display={{ base: "flex", md: "none" }}
+        align="center"
+        px={3}
+        py={2}
+        borderBottomWidth="1px"
+        borderColor="borderC"
+        bg="surface"
+      >
+        <Box as="button" onClick={onOpenMenu} aria-label="Open menu" color="ink" p={1}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </Box>
+        <Text ml={2} fontWeight="semibold" color="ink" fontSize="sm">Research Tool</Text>
+      </Flex>
+
       <Box flex="1" overflowY="auto">
-        <Box maxW="1040px" mx="auto" px={4} py={8} spaceY={4}>
+        <Box maxW={{ base: "100%", lg: "1040px" }} mx="auto" px={{ base: 3, md: 4 }} py={8} spaceY={4}>
           {msgs.length === 0 && (
             <Box py={16} textAlign="center" color="muted">
               <Text fontSize="lg" color="ink">Paste fundamental and/or technical data</Text>
@@ -183,7 +201,7 @@ export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; in
           {msgs.map((m, i) => (
             <Box
               key={i}
-              maxW="85%"
+              maxW={{ base: "92%", md: "85%" }}
               p={3}
               rounded="lg"
               whiteSpace="pre-wrap"
@@ -216,10 +234,10 @@ export default function Chat({ roles, initialAnalysis }: { roles: RoleStatus; in
       </Box>
 
       <Box borderTopWidth="1px" borderColor="borderC" bg="bg">
-        <Box maxW="1040px" mx="auto" px={4} py={4}>
+        <Box maxW={{ base: "100%", lg: "1040px" }} mx="auto" px={{ base: 3, md: 4 }} py={4}>
           {paste === null ? (
             <Flex align="center" justify="space-between" gap={3} wrap="wrap">
-              <Flex gap={2} wrap="wrap">
+              <Flex gap={2} wrap="wrap" w={{ base: "100%", md: "auto" }} justify={{ base: "center", md: "flex-start" }}>
                 <Button
                   onClick={() => setPaste("fundamental")}
                   disabled={busy || !roles.fundamental}

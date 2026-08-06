@@ -14,7 +14,7 @@ const ROLE_LABEL: Record<RoleKey, string> = {
   synthesis: "Brain synthesis",
 };
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) {
   const router = useRouter();
   const [roles, setRoles] = useState<Roles | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -29,11 +29,16 @@ export default function Sidebar() {
     ? (Object.entries(roles).filter(([, v]) => !v).map(([k]) => k) as RoleKey[])
     : [];
 
-  return (
-    <Box as="aside" w="260px" h="100vh" borderRightWidth="1px" borderColor="borderC" bg="surface" display="flex" flexDir="column">
+  const go = (path: string) => {
+    router.push(path);
+    onClose?.();
+  };
+
+  const content = (
+    <Flex flexDir="column" h="100%">
       <Flex align="center" justify="space-between" p={4}>
         <Heading size="sm" color="ink" fontWeight="semibold">Research Tool</Heading>
-        <Link href="/settings" aria-label="Settings" color="muted" _hover={{ color: "ink" }}>
+        <Link href="/settings" aria-label="Settings" color="muted" _hover={{ color: "ink" }} onClick={() => go("/settings")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -42,7 +47,7 @@ export default function Sidebar() {
       </Flex>
 
       <Box px={3} pb={2}>
-        <Button w="full" colorScheme="accent" size="sm" onClick={() => router.push("/")}>
+        <Button w="full" colorScheme="accent" size="sm" onClick={() => go("/")}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
             <path d="M6 1v10M1 6h10" />
           </svg>
@@ -58,7 +63,7 @@ export default function Sidebar() {
               <Box as="li" key={k}>{ROLE_LABEL[k]}</Box>
             ))}
           </Box>
-          <Link href="/settings" mt={1} display="inline-block" textDecoration="underline">
+          <Link href="/settings" mt={1} display="inline-block" textDecoration="underline" onClick={() => onClose?.()}>
             Configure in Settings →
           </Link>
         </Box>
@@ -70,7 +75,7 @@ export default function Sidebar() {
           {history.map((h) => (
             <Button
               key={h.id}
-              onClick={() => router.push(`/?id=${h.id}`)}
+              onClick={() => go(`/?id=${h.id}`)}
               variant="ghost"
               justifyContent="flex-start"
               size="sm"
@@ -94,6 +99,46 @@ export default function Sidebar() {
       <Box borderTopWidth="1px" borderColor="borderC" px={4} py={3} fontSize="11px" color="muted">
         Research tool, not financial advice — all outputs are estimates based on assumptions you can inspect.
       </Box>
-    </Box>
+    </Flex>
+  );
+
+  return (
+    <>
+      {/* Desktop / tablet: static side rail */}
+      <Box as="aside" display={{ base: "none", md: "flex" }} w="260px" h="100vh" borderRightWidth="1px" borderColor="borderC" bg="surface" overflowY="hidden">
+        {content}
+      </Box>
+
+      {/* Mobile: slide-in drawer with overlay */}
+      {isOpen && (
+        <>
+          <Box
+            onClick={onClose}
+            position="fixed"
+            inset="0"
+            bg="blackAlpha.600"
+            zIndex={100}
+            display={{ base: "block", md: "none" }}
+          />
+          <Box
+            as="aside"
+            position="fixed"
+            left="0"
+            top="0"
+            bottom="0"
+            w="280px"
+            maxW="80vw"
+            bg="surface"
+            borderRightWidth="1px"
+            borderColor="borderC"
+            zIndex={101}
+            display={{ base: "flex", md: "none" }}
+            flexDir="column"
+          >
+            {content}
+          </Box>
+        </>
+      )}
+    </>
   );
 }

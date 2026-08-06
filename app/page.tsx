@@ -28,6 +28,7 @@ function PageInner() {
   const [roles, setRoles] = useState<RoleStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialAnalysis, setInitialAnalysis] = useState<string | undefined>();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/roles")
@@ -79,7 +80,7 @@ function PageInner() {
 
   return (
     <div className="flex h-full">
-      <Sidebar />
+      <Sidebar isOpen={menuOpen} onClose={() => setMenuOpen(false)} />
       {/* `key` forces Chat to remount when navigating between analyses, so its
           message thread reseeds with the selected analysis instead of carrying
           stale bubbles from a previous selection. */}
@@ -87,6 +88,7 @@ function PageInner() {
         key={analysisId ?? "new"}
         roles={roles ?? { fundamental: false, technical: false, synthesis: false }}
         initialAnalysis={initialAnalysis}
+        onOpenMenu={() => setMenuOpen(true)}
       />
     </div>
   );

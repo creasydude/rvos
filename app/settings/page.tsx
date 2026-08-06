@@ -134,7 +134,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <Box maxW="720px" mx="auto" px={4} py={8} color="ink">
+    <Box maxW={{ base: "100%", md: "720px" }} mx="auto" px={{ base: 3, md: 4 }} py={8} color="ink">
       <Flex mb={6} align="center" justify="space-between">
         <Heading size="lg">Settings</Heading>
         <Link href="/" style={{ color: "#a0a0ac", textDecoration: "none" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#e8e8ec")} onMouseLeave={(e) => (e.currentTarget.style.color = "#a0a0ac")}>

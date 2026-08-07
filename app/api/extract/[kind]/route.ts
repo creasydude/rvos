@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRoleAssignments } from "@/lib/db";
 import { complete } from "@/lib/llm";
 import { EXTRACT_SYSTEM, EXTRACT_TECHNICAL_SYSTEM } from "@/lib/prompts";
-import { saveAnalysis } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -47,17 +46,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ kind: stri
     parsed = null; // leave it as raw text; UI shows it and lets the user re-run
   }
 
-  if (parsed && typeof parsed === "object") {
-    const rec = parsed as Record<string, unknown>;
-    const ticker = typeof rec.ticker === "string" ? rec.ticker : undefined;
-    saveAnalysis({
-      id: crypto.randomUUID(),
-      ticker,
-      kind: "notes",
-      body: JSON.stringify(rec),
-      createdAt: Date.now(),
-    });
-  }
+  // Note: we deliberately do NOT persist extracted notes here. They're only
+  // intermediate — the client keeps them in chat state and hands them to
+  // /api/analyze. Saving them as `notes` analyses cluttered the sidebar
+  // history (one entry per extraction, unrelated to the final analysis).
 
   return NextResponse.json({ raw, parsed });
 }

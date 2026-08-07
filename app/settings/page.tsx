@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   Box, Button, DialogBackdrop, DialogBody, DialogCloseTrigger, DialogContent, DialogFooter,
-  DialogHeader, DialogRoot, DialogTitle, Flex, Heading, Input, NativeSelectField, NativeSelectRoot,
+  DialogHeader, DialogPositioner, DialogRoot, DialogTitle, Flex, Heading, Input, NativeSelectField, NativeSelectRoot,
   Text, VStack, useDisclosure,
 } from "@chakra-ui/react";
 
@@ -223,9 +223,10 @@ export default function SettingsPage() {
       </Box>
 
       {/* Add/edit dialog */}
-      <DialogRoot open={open} onOpenChange={(d) => !d.open && onClose()}>
+      <DialogRoot placement="center" open={open} onOpenChange={(d) => !d.open && onClose()}>
         <DialogBackdrop bg="blackAlpha.700" />
-        <DialogContent bg="surface" color="ink" borderWidth="1px" borderColor="borderC">
+        <DialogPositioner>
+          <DialogContent bg="surface" color="ink" borderWidth="1px" borderColor="borderC">
           <DialogHeader>
             <DialogTitle>{form?.id ? "Edit endpoint" : "Add endpoint"}</DialogTitle>
           </DialogHeader>
@@ -279,7 +280,8 @@ export default function SettingsPage() {
             </Button>
           </DialogFooter>
           <DialogCloseTrigger />
-        </DialogContent>
+          </DialogContent>
+        </DialogPositioner>
       </DialogRoot>
     </Box>
   );

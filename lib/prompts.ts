@@ -75,3 +75,49 @@ NEVER invent units or scale. If the brain says a per-share value is 329.45, that
   const user = `Fundamental notes (JSON):\n${input.fundamental || "(none)"}\n\nTechnical notes (JSON):\n${input.technical || "(none)"}\n\nBrain calculations (JSON, already computed — trust these, do not recompute):\n${input.brain}${missing}\n\nWrite the analysis.`;
   return { system, user };
 }
+
+// ---------------------------------------------------------------------------
+// Follow-up chat over a completed analysis. Same invariant: the LLM never does
+// arithmetic. Every number the chat cites must come verbatim from the dataset
+// baked into the system prompt; it may not compute, scale, or derive anything.
+// ---------------------------------------------------------------------------
+
+const CHAT_PREAMBLE = `${FRAMING}
+You are a research assistant discussing a specific stock with the user. The stock's complete dataset
+— its structured fundamental notes, its structured technical notes, the computed brain results, and the
+latest written analysis — is included below. It is the ONLY source of truth for this conversation.
+
+Rules:
+- Every number or figure you cite must come from this dataset, with the unit exactly as given. Never
+  recompute, estimate, round meaningfully, scale, or transform a number, and never multiply/divide or
+  combine figures to invent a metric the brain did not already produce. The calculations were already
+  done; your job is to interpret them, not redo them.
+- Read each calc's unit before citing it: "usd-per-share" is dollars per share, "usd" is total dollars,
+  "%" is already a percent, "x" is a multiple, "z"/"score"/"ratio"/"num" as labeled.
+- If the user asks for a figure or type of analysis NOT present in the dataset, say clearly that it is
+  not available rather than guessing, approximating, or working it out.
+- Stay in decision-support mode: present scenarios and the evidence in the dataset, not buy/sell calls.
+- Be concise, grounded, and specific, referencing the calc/section you are drawing from.`;
+
+export function buildChatSystem(ctx: {
+  fundamental?: string;
+  technical?: string;
+  brain: string;
+  writeup: string;
+}): string {
+  return `${CHAT_PREAMBLE}
+
+=== STOCK DATA START ===
+Fundamental notes (JSON):
+${ctx.fundamental || "(none)"}
+
+Technical notes (JSON):
+${ctx.technical || "(none)"}
+
+Brain calculations (JSON, already computed — cite these as-is, do not recompute):
+${ctx.brain || "(none)"}
+
+Latest analysis write-up:
+${ctx.writeup || "(none)"}
+=== STOCK DATA END ===`;
+}

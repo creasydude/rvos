@@ -13,11 +13,15 @@ type Msg =
   | { role: "assistant"; text: string; label: "analysis" | "notes"; kind?: PasteKind }
   | { role: "error"; text: string };
 
-function parseSSE(res: Response, onDelta: (d: string) => void): Promise<string> {
+type ChatMsg = { role: "user" | "assistant"; text: string };
+
+/** Parses the app's SSE (data: {"delta":...} … {"done":true, "id":...}). */
+function parseSSE(res: Response, onDelta: (d: string) => void): Promise<{ text: string; id?: string }> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   let full = "";
+  let outId: string | undefined;
   return new Promise((resolve, reject) => {
     (async () => {
       try {
@@ -39,13 +43,16 @@ function parseSSE(res: Response, onDelta: (d: string) => void): Promise<string> 
                     onDelta(json.delta);
                     full += json.delta;
                   }
-                  if (json.done) resolve(full);
+                  if (json.done) {
+                    if (json.id) outId = json.id;
+                    resolve({ text: full, id: json.id });
+                  }
                 } catch {}
               }
             }
           }
         }
-        resolve(full);
+        resolve({ text: full, id: outId });
       } catch (e) {
         reject(e);
       }
@@ -53,7 +60,19 @@ function parseSSE(res: Response, onDelta: (d: string) => void): Promise<string> 
   });
 }
 
-export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: RoleStatus; initialAnalysis?: string; onOpenMenu?: () => void }) {
+export default function Chat({
+  roles,
+  initialAnalysis,
+  analysisId,
+  analysisTicker,
+  onOpenMenu,
+}: {
+  roles: RoleStatus;
+  initialAnalysis?: string;
+  analysisId?: string | null;
+  analysisTicker?: string;
+  onOpenMenu?: () => void;
+}) {
   const [msgs, setMsgs] = useState<Msg[]>(
     initialAnalysis
       ? [{ role: "assistant", text: initialAnalysis, label: "analysis" }]
@@ -63,6 +82,35 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
   useEffect(() => {
     if (initialAnalysis) setMsgs([{ role: "assistant", text: initialAnalysis, label: "analysis" }]);
   }, [initialAnalysis]);
+
+  // The analysis we can chat with: either the one loaded from history (prop)
+  // or a freshly completed analysis (set when /api/analyze returns its id).
+  const [activeId, setActiveId] = useState<string | null>(analysisId ?? null);
+  useEffect(() => {
+    setActiveId(analysisId ?? null);
+  }, [analysisId]);
+
+  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+
+  // Load persisted Q&A when an analysis is opened.
+  useEffect(() => {
+    if (!activeId) {
+      setChatMsgs([]);
+      return;
+    }
+    let alive = true;
+    fetch(`/api/chat?analysisId=${activeId}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (alive && Array.isArray(d)) setChatMsgs(d.map((m: any) => ({ role: m.role, text: m.content })));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [activeId]);
 
   const [paste, setPaste] = useState<PasteKind | null>(null);
   const [pasteText, setPasteText] = useState("");
@@ -74,14 +122,22 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
   const replaceLastAssistant = (fn: (m: Extract<Msg, { role: "assistant" }>) => Extract<Msg, { role: "assistant" }>) =>
     setMsgs((prev) => {
       const copy = [...prev];
-      const i = copy.findIndex((m) => m.role === "assistant");
-      if (i !== -1) copy[i] = fn(copy[i] as Extract<Msg, { role: "assistant" }>);
+      // Target the most recent assistant bubble (index from the end). The old
+      // code used findIndex, which matched the FIRST assistant bubble — so a
+      // fresh extraction/stream would overwrite an earlier notes bubble and the
+      // live text never showed up where it belonged.
+      for (let i = copy.length - 1; i >= 0; i--) {
+        if (copy[i].role === "assistant") {
+          copy[i] = fn(copy[i] as Extract<Msg, { role: "assistant" }>);
+          break;
+        }
+      }
       return copy;
     });
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgs, paste]);
+  }, [msgs, paste, chatMsgs]);
 
   const notesOf = (kind: PasteKind): string | undefined => {
     let found: string | undefined;
@@ -142,17 +198,12 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Analysis failed");
       }
-      await parseSSE(res, (delta) => {
+      const { id } = await parseSSE(res, (delta) => {
         streamedRef.current += delta;
         replaceLastAssistant((m) => ({ ...m, text: streamedRef.current }));
       });
-      if (streamedRef.current.trim()) {
-        fetch("/api/analyses", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind: "analysis", title: "Analysis", body: streamedRef.current }),
-        }).catch(() => {});
-      }
+      // The server persists the analysis (with its full context); unlock chat.
+      if (id) setActiveId(id);
     } catch (e) {
       push({ role: "error", text: (e as Error).message });
     }
@@ -166,6 +217,43 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
     }
     return has.fundamental || has.technical;
   })();
+
+  const replaceLastChat = (fn: (m: ChatMsg) => ChatMsg) =>
+    setChatMsgs((prev) => {
+      const copy = [...prev];
+      if (copy.length && copy[copy.length - 1].role === "assistant") {
+        copy[copy.length - 1] = fn(copy[copy.length - 1]);
+      }
+      return copy;
+    });
+
+  const sendChat = async () => {
+    const text = chatInput.trim();
+    if (!text || chatBusy || !activeId) return;
+    setChatInput("");
+    setChatMsgs((p) => [...p, { role: "user", text }]);
+    setChatBusy(true);
+    setChatMsgs((p) => [...p, { role: "assistant", text: "" }]);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ analysisId: activeId, message: text }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Chat failed");
+      }
+      await parseSSE(res, (delta) => {
+        replaceLastChat((m) => ({ ...m, text: m.text + delta }));
+      });
+    } catch (e) {
+      replaceLastChat((m) => ({ ...m, text: (m.text ? m.text : "") + "\n\n_(Error: " + (e as Error).message + ")_" }));
+    }
+    setChatBusy(false);
+  };
+
+  const hasAnalysis = activeId !== null;
 
   return (
     <Flex flex="1" h="100vh" flexDir="column" minW="0">
@@ -189,7 +277,7 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
 
       <Box flex="1" overflowY="auto">
         <Box maxW={{ base: "100%", lg: "1040px" }} mx="auto" px={{ base: 3, md: 4 }} py={8} spaceY={4}>
-          {msgs.length === 0 && (
+          {msgs.length === 0 && chatMsgs.length === 0 && (
             <Box py={16} textAlign="center" color="muted">
               <Text fontSize="lg" color="ink">Paste fundamental and/or technical data</Text>
               <Text mt={1} fontSize="sm">
@@ -224,8 +312,36 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
                 ) : (
                   <Markdown>{m.text}</Markdown>
                 )
+              ) : m.role === "assistant" && m.label === "notes" && m.text === "" && busy ? (
+                <Text color="muted" animation="pulse 2s ease-in-out infinite">Extracting…</Text>
               ) : (
                 m.text
+              )}
+            </Box>
+          ))}
+
+          {/* Follow-up chat thread (rendered below the analysis) */}
+          {chatMsgs.map((m, i) => (
+            <Box
+              key={`chat-${i}`}
+              maxW={{ base: "92%", md: "85%" }}
+              p={3}
+              rounded="lg"
+              whiteSpace="pre-wrap"
+              fontSize="sm"
+              lineHeight="relaxed"
+              alignSelf={m.role === "user" ? "flex-end" : "flex-start"}
+              bg={m.role === "user" ? "accent" : "surface"}
+              color={m.role === "user" ? "white" : "ink"}
+              borderWidth={m.role === "user" ? 0 : 1}
+              borderColor="borderC"
+            >
+              {m.role === "user" ? (
+                m.text
+              ) : m.text === "" && chatBusy ? (
+                <Text color="muted" animation="pulse 2s ease-in-out infinite">Thinking…</Text>
+              ) : (
+                <Markdown>{m.text}</Markdown>
               )}
             </Box>
           ))}
@@ -235,7 +351,41 @@ export default function Chat({ roles, initialAnalysis, onOpenMenu }: { roles: Ro
 
       <Box borderTopWidth="1px" borderColor="borderC" bg="bg">
         <Box maxW={{ base: "100%", lg: "1040px" }} mx="auto" px={{ base: 3, md: 4 }} py={4}>
-          {paste === null ? (
+          {hasAnalysis ? (
+            /* Follow-up chat over the analysis */
+            <Box>
+              <Flex align="center" justify="space-between" mb={2}>
+                <Text fontSize="sm" fontWeight="medium" color="ink">
+                  {analysisTicker ? `Ask about ${analysisTicker.toUpperCase()}` : "Ask about this stock"}
+                </Text>
+                <Text fontSize="11px" color="muted">Research tool, not financial advice.</Text>
+              </Flex>
+              <Textarea
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendChat();
+                  }
+                }}
+                placeholder="Ask about the data — e.g. what's the DCF implying, how sensitive is the bull case, what metric is missing…"
+                rows={2}
+                resize="none"
+                bg="surface"
+                borderColor="borderC"
+                color="ink"
+                _placeholder={{ color: "muted" }}
+                _focus={{ borderColor: "accent" }}
+                disabled={chatBusy}
+              />
+              <Flex justify="flex-end" mt={2}>
+                <Button onClick={sendChat} disabled={chatBusy || chatInput.trim() === ""} colorScheme="accent" size="sm">
+                  {chatBusy ? "Answering…" : "Send"}
+                </Button>
+              </Flex>
+            </Box>
+          ) : paste === null ? (
             <Flex align="center" justify="space-between" gap={3} wrap="wrap">
               <Flex gap={2} wrap="wrap" w={{ base: "100%", md: "auto" }} justify={{ base: "center", md: "flex-start" }}>
                 <Button

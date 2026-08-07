@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  serverExternalPackages: ["better-sqlite3"],
-};
+// Storage is node:sqlite (a Node builtin), so no native package needs to be
+// externalized from the server bundle anymore.
+const nextConfig = {};
 
 export default nextConfig;

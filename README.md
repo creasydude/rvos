@@ -23,7 +23,7 @@ npm run brain:test   # verifies fundamental + technical math
 
 - `brain/fundamental.ts` — DCF, multiples, Graham, DDM, DuPont, Altman Z, Piotroski F, FCF yield (pure TS)
 - `brain/technical.ts` — SMA/EMA, MACD, RSI, Bollinger, Stochastic, ATR, ADX, OBV, VWAP, Z-score, trend channels (over `technicalindicators`)
-- `lib/` — LLM adapter (single OpenAI-compatible core + SSE), prompts, analyze orchestration, SQLite storage (`better-sqlite3`)
+- `lib/` — LLM adapter (single OpenAI-compatible core + SSE), prompts, analyze orchestration, SQLite storage (`node:sqlite`)
 - `app/api/` — endpoints, roles, extract, streaming analyze, analyses history
 - `app/settings/` — endpoint + role assignment UI
 

@@ -10,7 +10,10 @@ export async function GET(req: Request) {
     const a = getAnalysis(id);
     return NextResponse.json(a ?? { error: "not found" }, { status: a ? 200 : 404 });
   }
-  return NextResponse.json(listAnalyses());
+  // History is only meaningful for completed analyses. Extracted notes are no
+  // longer saved, but this also hides any legacy `notes` rows so the sidebar
+  // shows one entry per analysis run instead of one per paste.
+  return NextResponse.json(listAnalyses("analysis"));
 }
 
 export async function POST(req: Request) {

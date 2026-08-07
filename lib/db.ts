@@ -1,29 +1,37 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import fs from "fs";
 import path from "path";
 
 // Server-side only. Key/value stores via SQLite — the storage layer is a
-// serialization detail; roles, analyses and endpoints are just typed maps.
+// serialization detail; roles, analyses, endpoints and chat messages are just
+// typed maps.
 //
 // TODO(phase 1): encrypt api_key at rest. Plain for now — single local user.
+//
+// Storage engine: node:sqlite (Node's built-in SQLite), NOT better-sqlite3.
+// better-sqlite3 is a native module that must be compiled from source when no
+// prebuilt binary exists for the runtime ABI (Node 26 has no prebuilds yet),
+// which required a Windows C++ toolchain. node:sqlite ships inside Node, so
+// there is nothing to install or compile. The .db file format is identical.
 
 const DATA_DIR = path.join(process.cwd(), "data");
 // data/ is a direct child of cwd, so a plain mkdirSync is enough (the
 // recursive option isn't in this @types/node's overloads).
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
-let _db: Database.Database | undefined;
+let _db: DatabaseSync | undefined;
 
 /**
  * Lazy singleton. Opening at module load breaks `next build` (its page-data
  * workers all import route modules concurrently → SQLITE_BUSY). Open on first
  * real request instead; a busy timeout swallows transient contention.
  */
-function getDb(): Database.Database {
+function getDb(): DatabaseSync {
   if (!_db) {
-    _db = new Database(path.join(DATA_DIR, "app.db"));
-    _db.pragma("busy_timeout = 5000");
-    _db.pragma("journal_mode = WAL");
+    _db = new DatabaseSync(path.join(DATA_DIR, "app.db"));
+    // PRAGMAs go through exec() — node:sqlite has no .pragma() method.
+    _db.exec("PRAGMA busy_timeout = 5000");
+    _db.exec("PRAGMA journal_mode = WAL");
     _db.exec(`
   CREATE TABLE IF NOT EXISTS endpoints (
     id TEXT PRIMARY KEY,
@@ -44,9 +52,28 @@ function getDb(): Database.Database {
     title TEXT,
     kind TEXT NOT NULL,          -- 'notes' | 'analysis'
     body TEXT NOT NULL,
+    fundamental TEXT,            -- serialized fundamental notes (JSON)
+    technical TEXT,              -- serialized technical notes (JSON)
+    brain TEXT,                  -- rendered brain calcs (the numbers the chat may cite)
     created_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    analysis_id TEXT NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,          -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_messages_analysis
+    ON chat_messages (analysis_id, created_at);
 `);
+    // Migration: analyses created before the context columns existed lack
+    // fundamental/technical/brain. SQLite has no ADD COLUMN IF NOT EXISTS, so
+    // introspect PRAGMA table_info and add whatever is missing.
+    const cols = (_db.prepare("PRAGMA table_info(analyses)").all() as any[]).map((c) => c.name);
+    for (const col of ["fundamental", "technical", "brain"]) {
+      if (!cols.includes(col)) _db.exec(`ALTER TABLE analyses ADD COLUMN ${col} TEXT`);
+    }
   }
   return _db;
 }
@@ -55,10 +82,13 @@ function getDb(): Database.Database {
  * Proxy so the rest of the file can keep calling `db.prepare(...)` etc. while
  * the real connection is created lazily on first use.
  */
-const db = new Proxy({} as Database.Database, {
-  get(_t, prop, receiver) {
+const db = new Proxy({} as DatabaseSync, {
+  get(_t, prop) {
     const real = getDb();
-    return Reflect.get(real, prop, receiver);
+    // Bind functions to the real connection — otherwise `this` inside the
+    // method is the proxy, and node:sqlite methods throw "Illegal invocation".
+    const value = Reflect.get(real, prop);
+    return typeof value === "function" ? (value as Function).bind(real) : value;
   },
 });
 
@@ -94,19 +124,11 @@ export function getEndpoint(id: string): Endpoint | undefined {
 export function saveEndpoint(e: Endpoint) {
   db.prepare(
     `INSERT INTO endpoints (id, name, provider, base_url, api_key, model, created_at)
-     VALUES (@id, @name, @provider, @base_url, @api_key, @model, @created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name=excluded.name, provider=excluded.provider, base_url=excluded.base_url,
        api_key=excluded.api_key, model=excluded.model`,
-  ).run({
-    id: e.id,
-    name: e.name,
-    provider: e.provider,
-    base_url: e.baseUrl ?? null,
-    api_key: e.apiKey,
-    model: e.model,
-    created_at: Date.now(),
-  });
+  ).run(e.id, e.name, e.provider, e.baseUrl ?? null, e.apiKey, e.model, Date.now());
 }
 
 export function deleteEndpoint(id: string) {
@@ -139,6 +161,12 @@ export type Analysis = {
   title?: string;
   kind: "notes" | "analysis";
   body: string;
+  /** Serialized fundamental notes JSON — the raw stock data the chat can cite. */
+  fundamental?: string;
+  /** Serialized technical notes JSON. */
+  technical?: string;
+  /** Rendered brain calcs — the computed numbers the chat may reference. */
+  brain?: string;
   createdAt: number;
 };
 
@@ -160,19 +188,62 @@ export function deleteAnalysis(id: string) {
 
 export function saveAnalysis(a: Analysis) {
   db.prepare(
-    `INSERT INTO analyses (id, ticker, title, kind, body, created_at)
-     VALUES (@id, @ticker, @title, @kind, @body, @created_at)
-     ON CONFLICT(id) DO UPDATE SET body=excluded.body`,
-  ).run({
-    id: a.id,
-    ticker: a.ticker ?? null,
-    title: a.title ?? null,
-    kind: a.kind,
-    body: a.body,
-    created_at: a.createdAt,
-  });
+    `INSERT INTO analyses (id, ticker, title, kind, body, fundamental, technical, brain, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       ticker=excluded.ticker, title=excluded.title, kind=excluded.kind,
+       body=excluded.body, fundamental=excluded.fundamental, technical=excluded.technical,
+       brain=excluded.brain`,
+  ).run(
+    a.id,
+    a.ticker ?? null,
+    a.title ?? null,
+    a.kind,
+    a.body,
+    a.fundamental ?? null,
+    a.technical ?? null,
+    a.brain ?? null,
+    a.createdAt,
+  );
 }
 
 function toAnalysis(r: any): Analysis {
-  return { id: r.id, ticker: r.ticker ?? undefined, title: r.title ?? undefined, kind: r.kind, body: r.body, createdAt: r.created_at };
+  return {
+    id: r.id,
+    ticker: r.ticker ?? undefined,
+    title: r.title ?? undefined,
+    kind: r.kind,
+    body: r.body,
+    fundamental: r.fundamental ?? undefined,
+    technical: r.technical ?? undefined,
+    brain: r.brain ?? undefined,
+    createdAt: r.created_at,
+  };
+}
+
+export type ChatMessage = {
+  id: string;
+  analysisId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+};
+
+export function listChatMessages(analysisId: string, limit = 50): ChatMessage[] {
+  const rows = db
+    .prepare("SELECT * FROM chat_messages WHERE analysis_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?")
+    .all(analysisId, limit) as any[];
+  return rows.map((r) => ({
+    id: r.id,
+    analysisId: r.analysis_id,
+    role: r.role as ChatMessage["role"],
+    content: r.content,
+    createdAt: r.created_at,
+  }));
+}
+
+export function saveChatMessage(m: ChatMessage) {
+  db.prepare(
+    "INSERT INTO chat_messages (id, analysis_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+  ).run(m.id, m.analysisId, m.role, m.content, m.createdAt);
 }

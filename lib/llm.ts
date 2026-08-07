@@ -15,15 +15,26 @@ export function baseUrlFor(provider: Provider, override?: string): string {
   return (override ?? DEFAULT_BASE[provider]).replace(/\/$/, "");
 }
 
+export type LlmMessage = { role: "system" | "user" | "assistant"; content: string };
+
+/** Default messages for a one-shot call: system then a single user turn. */
+function defaultMessages(params: { system: string; user: string; messages?: LlmMessage[] }): LlmMessage[] {
+  return params.messages ?? [
+    { role: "system", content: params.system },
+    { role: "user", content: params.user },
+  ];
+}
+
 /**
  * Single chat-completion call against any OpenAI-compatible endpoint.
- * `stream` can be a ReadableStream consumer or true (drains to a string).
+ * Pass `messages` to supply an explicit turn history (system + prior Q&A +
+ * the new user turn); otherwise it builds a one-shot system+user call.
  */
 export async function complete(params: {
   system: string;
   user: string;
   endpointId: string;
-  stream?: boolean;
+  messages?: LlmMessage[];
 }): Promise<string> {
   return consume(await streamComplete(params));
 }
@@ -37,6 +48,7 @@ export async function streamComplete(params: {
   system: string;
   user: string;
   endpointId: string;
+  messages?: LlmMessage[];
 }): Promise<ReadableStream<string>> {
   const ep = getEndpoint(params.endpointId);
   if (!ep) throw new Error("Endpoint not found");
@@ -51,10 +63,7 @@ export async function streamComplete(params: {
     body: JSON.stringify({
       model: ep.model,
       stream: true,
-      messages: [
-        { role: "system", content: params.system },
-        { role: "user", content: params.user },
-      ],
+      messages: defaultMessages(params),
     }),
   });
 

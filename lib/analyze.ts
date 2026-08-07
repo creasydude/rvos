@@ -59,10 +59,21 @@ function parseNum(raw: unknown, kind: "money" | "rate" | "plain"): number | unde
   return n;
 }
 
+export type AnalysisContext = {
+  /** Serialized fundamental notes JSON (as sent by the client). */
+  fundamental?: string;
+  /** Serialized technical notes JSON. */
+  technical?: string;
+  /** Rendered brain calcs — the computed numbers the chat may cite. */
+  brain: string;
+  /** Ticker if the notes carried one. */
+  ticker?: string;
+};
+
 export async function streamAnalysis(input: {
   fundamental?: string;
   technical?: string;
-}): Promise<ReadableStream<string>> {
+}): Promise<{ stream: ReadableStream<string>; context: AnalysisContext }> {
   const fundamentalJson = input.fundamental?.trim() || null;
   const technicalJson = input.technical?.trim() || null;
 
@@ -88,17 +99,35 @@ export async function streamAnalysis(input: {
     if (res.lastPrice != null) brainLines.push(`technical last close = ${res.lastPrice}`);
   }
 
+  const brain = brainLines.join("\n");
+
+  // Ticker (if the notes carried one) surfaces in history + chat labelling.
+  const fundamentalParsed = fundamentalJson ? safeJson(fundamentalJson) : null;
+  const technicalParsed = technicalJson ? safeJson(technicalJson) : null;
+  const ticker =
+    (fundamentalParsed && typeof fundamentalParsed.ticker === "string" ? fundamentalParsed.ticker : undefined) ??
+    (technicalParsed && typeof technicalParsed.ticker === "string" ? technicalParsed.ticker : undefined);
+
   const roles = getRoleAssignments();
   if (!roles.synthesis) throw new Error("No synthesis endpoint assigned — configure in Settings");
 
   const { system, user } = buildSynthesisPrompt({
     fundamental: fundamentalJson ?? "",
     technical: technicalJson ?? "",
-    brain: brainLines.join("\n"),
+    brain,
     missing,
   });
 
-  return streamComplete({ system, user, endpointId: roles.synthesis });
+  const stream = await streamComplete({ system, user, endpointId: roles.synthesis });
+  return {
+    stream,
+    context: {
+      fundamental: fundamentalJson ?? undefined,
+      technical: technicalJson ?? undefined,
+      brain,
+      ticker,
+    },
+  };
 }
 
 function safeJson(s: string): Record<string, unknown> | null {

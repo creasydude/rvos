@@ -28,6 +28,7 @@ function PageInner() {
   const [roles, setRoles] = useState<RoleStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialAnalysis, setInitialAnalysis] = useState<string | undefined>();
+  const [analysisTicker, setAnalysisTicker] = useState<string | undefined>();
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -65,15 +66,24 @@ function PageInner() {
   useEffect(() => {
     if (!analysisId) {
       setInitialAnalysis(undefined);
+      setAnalysisTicker(undefined);
       return;
     }
     fetch(`/api/analyses?id=${analysisId}`)
       .then((r) => r.json())
       .then((d) => {
-        if (d?.body && d.kind === "analysis") setInitialAnalysis(d.body);
-        else setInitialAnalysis(undefined);
+        if (d?.body && d.kind === "analysis") {
+          setInitialAnalysis(d.body);
+          setAnalysisTicker(typeof d.ticker === "string" ? d.ticker : undefined);
+        } else {
+          setInitialAnalysis(undefined);
+          setAnalysisTicker(undefined);
+        }
       })
-      .catch(() => setInitialAnalysis(undefined));
+      .catch(() => {
+        setInitialAnalysis(undefined);
+        setAnalysisTicker(undefined);
+      });
   }, [analysisId]);
 
   if (loading) return <Shell loading />;
@@ -88,6 +98,8 @@ function PageInner() {
         key={analysisId ?? "new"}
         roles={roles ?? { fundamental: false, technical: false, synthesis: false }}
         initialAnalysis={initialAnalysis}
+        analysisId={analysisId ?? null}
+        analysisTicker={analysisTicker}
         onOpenMenu={() => setMenuOpen(true)}
       />
     </div>

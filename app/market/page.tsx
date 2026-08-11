@@ -65,6 +65,7 @@ export default function MarketPage() {
   const [writeup, setWriteup] = useState("");
   const [writeupBusy, setWriteupBusy] = useState(false);
   const [writeupId, setWriteupId] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -84,6 +85,22 @@ export default function MarketPage() {
   const push = (kind: LogEntry["kind"], text: string) => {
     setLog((l) => [...l.slice(-200), { id: ++logId, kind, text }]);
   };
+
+  // Copy a calcs section to clipboard as `name = value [unit]` lines, with a
+  // transient "Copied ✓" label on the button that initiated it.
+  const copyCalcs = async (section: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(section);
+      setTimeout(() => setCopied((c) => (c === section ? null : c)), 1600);
+    } catch {
+      setCopied(null); // clipboard unavailable (non-secure context) — fail silently
+    }
+  };
+
+  // Calcs → clipboard text: one `name = value [unit]` line per calc.
+  const calcsText = (cs: { name: string; value: number; unit?: string }[] | undefined) =>
+    (cs ?? []).map((c) => `${c.name} = ${c.value.toFixed(3)}${c.unit ? ` ${c.unit}` : ""}`).join("\n");
 
   const runAnalyze = async (sym: string) => {
     if (analysing) return;
@@ -344,7 +361,18 @@ export default function MarketPage() {
                   </Text>
                   {(analysis.technical as { calcs: { name: string; value: number; unit?: string }[] })?.calcs?.length ? (
                     <Box mt={2}>
-                      <Text color="accent.300" fontWeight="semibold" mb={1}>Technical calcs</Text>
+                      <Flex align="center" justify="space-between" mb={1}>
+                        <Text color="accent.300" fontWeight="semibold">Technical calcs</Text>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          borderColor="borderC"
+                          height="22px"
+                          onClick={() => copyCalcs("technical", calcsText((analysis.technical as { calcs: { name: string; value: number; unit?: string }[] })?.calcs))}
+                        >
+                          {copied === "technical" ? "Copied ✓" : "Copy"}
+                        </Button>
+                      </Flex>
                       {(analysis.technical as { calcs: { name: string; value: number; unit?: string }[] }).calcs.map((c) => (
                         <Text key={c.name}>{c.name} = {c.value.toFixed(3)}</Text>
                       ))}
@@ -352,7 +380,18 @@ export default function MarketPage() {
                   ) : null}
                   {(analysis.fundamental as { calcs: { name: string; value: number; unit?: string }[] })?.calcs?.length ? (
                     <Box mt={2}>
-                      <Text color="accent.300" fontWeight="semibold" mb={1}>Fundamental calcs</Text>
+                      <Flex align="center" justify="space-between" mb={1}>
+                        <Text color="accent.300" fontWeight="semibold">Fundamental calcs</Text>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          borderColor="borderC"
+                          height="22px"
+                          onClick={() => copyCalcs("fundamental", calcsText((analysis.fundamental as { calcs: { name: string; value: number; unit?: string }[] })?.calcs))}
+                        >
+                          {copied === "fundamental" ? "Copied ✓" : "Copy"}
+                        </Button>
+                      </Flex>
                       {(analysis.fundamental as { calcs: { name: string; value: number; unit?: string }[] }).calcs.map((c) => (
                         <Text key={c.name}>{c.name} = {c.value.toFixed(3)}</Text>
                       ))}
@@ -565,12 +604,61 @@ type FContext = {
   units: string;
 };
 
+/** The LLM context as a plain-text blob — mirrors what the panel displays, so
+ *  Copy == exactly what the AI write-up sees (line items + statement/report excerpts). */
+function serializeContext(context: FContext): string {
+  const parts: string[] = [];
+  let header = context.symbol ?? "";
+  if (context.name) header += ` — ${context.name}`;
+  if (context.fy != null) header += ` · FY ${context.fy}`;
+  if (context.periodEnd) header += ` · period ${context.periodEnd}`;
+  if (context.units === "rial") header += " · values in rial";
+  parts.push(header);
+
+  if (context.lineItems.length) {
+    parts.push("Line items:");
+    for (const li of context.lineItems) parts.push(`${li.label} = ${li.value.toLocaleString("en-US")} ریال · FY ${li.fy}`);
+  }
+
+  if (context.statement) {
+    parts.push(`Statement — ${context.statement.title}${context.statement.periodEnd ? ` (${context.statement.periodEnd})` : ""}`);
+    parts.push(context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)");
+  }
+
+  for (const r of context.reports) {
+    parts.push(`${kindLabel(r.kind)} — ${r.title}${r.published ? ` (${r.published})` : ""}`);
+    parts.push(r.excerpt || "(no text)");
+  }
+  return parts.join("\n");
+}
+
 function FundamentalContext({ context }: { context: FContext | null }) {
+  const [ctxCopied, setCtxCopied] = useState(false);
   if (!context) return null;
   if (!context.lineItems.length && !context.statement && !context.reports.length) return null;
+  const copyContext = async () => {
+    try {
+      await navigator.clipboard.writeText(serializeContext(context));
+      setCtxCopied(true);
+      setTimeout(() => setCtxCopied(false), 1600);
+    } catch {
+      setCtxCopied(false); // clipboard unavailable — fail silently
+    }
+  };
   return (
     <Box mt={2} fontSize="xs" lineHeight="1.7">
-      <Text color="accent.300" fontWeight="semibold" mb={1}>LLM context — what the AI write-up sees</Text>
+      <Flex align="center" justify="space-between" mb={1}>
+        <Text color="accent.300" fontWeight="semibold">LLM context — what the AI write-up sees</Text>
+        <Button
+          size="xs"
+          variant="outline"
+          borderColor="borderC"
+          height="22px"
+          onClick={copyContext}
+        >
+          {ctxCopied ? "Copied ✓" : "Copy"}
+        </Button>
+      </Flex>
       <Text color="muted">
         {context.symbol ?? ""}
         {context.name ? ` — ${context.name}` : ""}

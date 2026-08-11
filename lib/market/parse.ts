@@ -19,11 +19,17 @@ type Pdfjs = {
   getDocument: (src: { data: Uint8Array }) => { promise: Promise<{ numPages: number; getPage: (n: number) => Promise<Page> }> };
 };
 type Page = {
-  getTextContent: () => Promise<{ items: { str?: string; transform?: number[] }[] }>;
+  getTextContent: () => Promise<{ items: { str?: string; transform?: number[]; height?: number }[] }>;
 };
 
-type Cell = { str: string; x: number };
+type Cell = { str: string; x: number; h?: number; isSpace?: boolean };
 type Row = { y: number; cells: Cell[] };
+
+// RTL (Arabic/Persian) blocks — used to decide reading order within a row.
+// Codal's Excel-generated statement PDFs lay one visual line's fragments right-
+// to-left (descending x); the بااهمیت disclosure letters emit per-character
+// items in the same geometry. Both must be read rightmost-first.
+const RTL_RE = /[֐-׿؀-ۿݐ-ݿࢠ-ࣿיִ-﷿ﹰ-﻿]/;
 
 /** Labels → metric. Order matters: first matching pattern in a row wins. */
 const PATTERNS: { pattern: string; metric: MetricKey; scale: "money" | "per_share"; exclude?: string }[] = [
@@ -161,14 +167,21 @@ const HTML_RULES: { re: RegExp; metric: MetricKey; money: boolean; exclude?: Reg
   // real top line because cash-flow rows precede the income statement.
   { re: /فروش\s*(خالص|صادرات|داخلي|سهام)/i, metric: METRICS.revenues, money: true, exclude: /تمام|دريافت|پرداخت|حاصل/ },
   { re: /مبلغ\s*فروش/i, metric: METRICS.revenues, money: true },
-  { re: /سود\s*\(\s*زيان\s*\)\s*عمليات/i, metric: METRICS.ebit, money: true },
-  { re: /سود\s*عمليات/i, metric: METRICS.ebit, money: true },
-  { re: /سود\s*\(\s*زيان\s*\)\s*قبل\s*از/i, metric: METRICS.preTaxIncome, money: true },
-  { re: /سود\s*قبل\s*از/i, metric: METRICS.preTaxIncome, money: true },
+  // Exclude the pre-tax line "سود (زیان) عمليات در حال تداوم قبل از ماليات" —
+  // it contains "عمليات" and would be claimed as ebit before reaching the
+  // pre-tax rule below (وساپا).
+  { re: /سود\s*\(\s*زيان\s*\)\s*عمليات/i, metric: METRICS.ebit, money: true, exclude: /قبل\s*از/ },
+  { re: /سود\s*عمليات/i, metric: METRICS.ebit, money: true, exclude: /قبل\s*از/ },
+  // Pre-tax appears as "سود (زیان) عملیات در حال تداوم قبل از ماليات" in current
+  // Codal formats (and "سود (زیان) قبل از کسر مالیات" in older ones). Exclude
+  // "قبل از احتساب سهم گروه از سود شرکت‌های وابسته" — an intermediate
+  // consolidation line, not the pre-tax figure (وساپا's real pre-tax follows it).
+  { re: /سود\s*\(\s*زيان\s*\)\s*(عمليات\s*در\s*حال\s*تداوم\s*)?قبل\s*از/i, metric: METRICS.preTaxIncome, money: true, exclude: /احتساب/ },
+  { re: /سود\s*قبل\s*از/i, metric: METRICS.preTaxIncome, money: true, exclude: /احتساب/ },
   { re: /هزينه\s*هاي?\s*مال/i, metric: METRICS.interestExpense, money: true },
   { re: /مالیات\s*بر\s*درآمد/i, metric: METRICS.taxExpense, money: true, exclude: /قبل|پرداختني|اول|اقلام/ },
   { re: /سود\s*\(\s*زيان\s*\)\s*خالص\s*هر\s*سهم/i, metric: METRICS.eps, money: false },
-  { re: /سود\s*پايه\s*هر\s*سهم/i, metric: METRICS.eps, money: false },
+  { re: /سود\s*\(\s*زيان\s*\)\s*پايه\s*هر\s*سهم|سود\s*پايه\s*هر\s*سهم/i, metric: METRICS.eps, money: false },
   { re: /سود\s*\(\s*زيان\s*\)\s*خالص/i, metric: METRICS.netIncome, money: true },
   { re: /سود\s*خالص/i, metric: METRICS.netIncome, money: true },
   // ── Cash flow ──
@@ -247,6 +260,19 @@ export function parseHtml(html: string): { metric: MetricKey; value: number }[] 
   });
   const rules = hasEarnedInsRow ? HTML_RULES.filter((r) => !r.grossPremiumOnly) : HTML_RULES;
 
+  // A statement Excel carries BOTH the parent-only (individual) statements and
+  // the CONSOLIDATED group statements. First-match-wins mixed them — وساپا's
+  // revenue came from the individual (dividends only), its cogs from the
+  // consolidated group, so the margin ratios were nonsense. Consolidated tables
+  // are the ones carrying consolidation markers (قابل انتساب به / مالکان شرکت
+  // اصلی / منافع فاقد حق کنترل / سهم گروه از سود); we collect every candidate
+  // with the statement region it lives in and prefer a marked region, falling
+  // back to the first match when no marker exists (single-statement docs).
+  const CONSOL_RE = /قابل\s*انتساب|مالکان?\s*شرکت|منافع\s*فاقد|سهم\s*گروه/;
+  const candidates = new Map<MetricKey, { value: number; region: number }[]>();
+  let region = 0; // statement region — split at each "شرح" header row
+  const regionConsolidated: boolean[] = [];
+
   // Width of the most recent period header row → which column is the current period.
   const currentColByWidth = new Map<number, number>();
   for (const row of rows) {
@@ -255,6 +281,7 @@ export function parseHtml(html: string): { metric: MetricKey; value: number }[] 
     const label0 = normLabel(row[0] ?? "");
     if (label0 === "شرح" && row.length >= 3) {
       currentColByWidth.set(row.length, findCurrentPeriodColumn(row));
+      region++; // a new statement region begins at each "شرح" header
     }
 
     // Skip 10+ col rows: 13-col equity-movement pivots and 15+ col monthly
@@ -270,6 +297,7 @@ export function parseHtml(html: string): { metric: MetricKey; value: number }[] 
       const rawLabel = half[0];
       if (!rawLabel) continue;
       const label = normLabel(rawLabel);
+      if (CONSOL_RE.test(label)) regionConsolidated[region] = true;
 
       // Current-period column: header-derived when available (handles the
       // insurer 7-col trend table), else first numeric after the label.
@@ -289,19 +317,42 @@ export function parseHtml(html: string): { metric: MetricKey; value: number }[] 
       for (const rule of rules) {
         if (!rule.re.test(label)) continue;
         if (rule.exclude && rule.exclude.test(label)) continue;
-        if (found.has(rule.metric)) break; // first match wins (consolidated before individual)
         const value = rule.money ? currentVal * unit : currentVal;
-        found.set(rule.metric, value);
+        let arr = candidates.get(rule.metric);
+        if (!arr) { arr = []; candidates.set(rule.metric, arr); }
+        arr.push({ value, region });
         break;
       }
     }
+  }
+
+  for (const [metric, list] of candidates) {
+    // First candidate whose region carries a consolidation marker, else the
+    // first match anywhere (preserves the old behaviour when the Excel holds a
+    // single statement and no markers).
+    const marked = list.find((c) => regionConsolidated[c.region]);
+    found.set(metric, (marked ?? list[0]).value);
   }
   return [...found.entries()].map(([metric, value]) => ({ metric, value }));
 }
 
 /**
  * Lazy-load pdfjs and collect every page's text items into positional rows
- * (one row per y-bucket, cells carrying their x so columns can be re-sorted).
+ * (one row per visual line, cells carrying their x so columns can be re-sorted),
+ * in DOCUMENT order — page by page, top-to-bottom within each page.
+ *
+ * The y bucketing is the load-bearing detail: Codal's Excel-generated statement
+ * PDFs lay one visual line's fragments at y values up to ~1 unit apart (verified
+ * on وساپا's filing: 518.0 vs 517.5, 497.5 vs 496.5). Rounding to 0.5 therefore
+ * SPLITS a line into many buckets and the join reads column fragments of
+ * different lines interleaved — the "scrambled table" text the LLM context was
+ * showing. Distinct lines sit ≥8 units apart, so a ~2-unit greedy cluster keeps
+ * lines separate while merging their fragments.
+ *
+ * The y coordinate is only meaningful WITHIN a page (same y on different pages
+ * is unrelated space), so rows must stay page-grouped — a global y-sort was the
+ * other half of the scramble: it read every page's top line, then every page's
+ * second line, and so on.
  */
 async function getPdfRows(buf: ArrayBuffer | ArrayBufferView): Promise<Row[]> {
   let pdfjs: Pdfjs;
@@ -318,24 +369,82 @@ async function getPdfRows(buf: ArrayBuffer | ArrayBufferView): Promise<Row[]> {
   const raw = buf instanceof Uint8Array ? Uint8Array.from(buf) : new Uint8Array(buf as ArrayBuffer);
   const doc = await pdfjs.getDocument({ data: raw }).promise;
 
+  const ROW_TOL = 2; // merge same-line fragments; distinct lines are ~8+ apart
   const rows: Row[] = [];
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const tc = await page.getTextContent();
-    const byY = new Map<number, Cell[]>();
+    const cluster: { y: number; cells: Cell[] }[] = [];
+    // Items arrive in (roughly) reading order; for each, merge into the nearest
+    // existing row when its baseline is within ROW_TOL — same line, keep it — else
+    // start a new row. Rows are kept y-sorted (desc) as we insert.
     for (const it of tc.items) {
-      const str = (it.str ?? "").trim();
-      if (!str) continue;
+      const raw = it.str ?? "";
+      const str = raw.trim();
+      // Keep the space glyphs (they mark word boundaries) — but drop the empty
+      // hasEOL runs so lines separate by y alone.
+      if (str === "" && raw !== " ") continue;
       const x = it.transform?.[4] ?? 0;
       const y = it.transform?.[5] ?? 0;
-      const key = Math.round(y * 2) / 2;
-      if (!byY.has(key)) byY.set(key, []);
-      byY.get(key)!.push({ str, x });
+      const cell: Cell = { str: raw === " " ? " " : str, x, h: it.height, isSpace: raw === " " };
+      let placed = false;
+      for (let i = cluster.length - 1; i >= 0; i--) {
+        if (Math.abs(cluster[i].y - y) <= ROW_TOL) {
+          cluster[i].cells.push(cell);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) cluster.push({ y, cells: [cell] });
     }
-    for (const [y, cells] of byY) rows.push({ y, cells });
+    cluster.sort((a, b) => b.y - a.y);
+    // Cells keep their CONTENT-STREAM order (no x re-sort) — rebuildText below
+    // reorders them per reading direction. Generators differ: the statement
+    // PDFs emit whole words already in reading order, while the بااهمیت
+    // disclosure letters emit ONE GLYPH per item in visual order; an x-sort
+    // destroys both in different ways.
+    for (const r of cluster) rows.push({ y: r.y, cells: r.cells });
   }
-  rows.sort((a, b) => (b.y - a.y) || (a.cells[0].x - b.cells[0].x));
   return rows;
+}
+
+/**
+ * Reassemble one PDF row into a readable line, handling the two layouts Codal
+ * actually emits:
+ *   - statement PDFs: whole words per item, already in reading order;
+ *   - disclosure letters: ONE GLYPH per item, emitted left-to-right across the
+ *     line (visual order), with a " " glyph between words.
+ * A naive ascending-x sort reverses Persian text in BOTH cases (the old bug:
+ * words / even individual letters came out backwards). Instead, split the row's
+ * cells into word segments at space glyphs or at any |x| jump larger than the
+ * font height, then emit segments rightmost-first for RTL lines. Cells keep
+ * their content-stream order, so letters inside a word stay in reading order.
+ */
+function rebuildText(row: Row): string {
+  const cells = row.cells;
+  const isRtl = cells.some((c) => RTL_RE.test(c.str));
+  const sizes = cells.map((c) => c.h).filter((h): h is number => h != null && h > 0);
+  const medH =
+    sizes.length ? sizes.slice().sort((a, b) => a - b)[Math.floor(sizes.length / 2)] : 14;
+  const gapTol = medH; // bigger than a letter advance, smaller than a word gap
+
+  const segs: { x: number; chars: string[] }[] = [];
+  let cur: { x: number; chars: string[] } | null = null;
+  let prevX = -Infinity;
+  const flush = () => {
+    if (cur) segs.push(cur);
+    cur = null;
+  };
+  for (const c of cells) {
+    if (c.isSpace || (cur && Math.abs(c.x - prevX) > gapTol)) flush();
+    if (c.isSpace) continue;
+    if (!cur) cur = { x: c.x, chars: [] };
+    cur.chars.push(c.str);
+    prevX = c.x;
+  }
+  flush();
+  if (isRtl) segs.sort((a, b) => b.x - a.x);
+  return segs.map((s) => s.chars.join("")).join(" ");
 }
 
 /**
@@ -348,7 +457,7 @@ async function getPdfRows(buf: ArrayBuffer | ArrayBufferView): Promise<Row[]> {
  */
 export async function extractPdfText(buf: ArrayBuffer | ArrayBufferView): Promise<string> {
   const rows = await getPdfRows(buf);
-  return rows.map((r) => r.cells.map((c) => c.str).join(" ")).join("\n");
+  return rows.map(rebuildText).join("\n");
 }
 
 /** Strip tags/entities from Codal's mso-HTML "Excel" attachment → plain text. */
@@ -382,7 +491,7 @@ export async function parsePdf(buf: ArrayBuffer | ArrayBufferView): Promise<{ me
   const found = new Map<MetricKey, number>();
   for (const row of rows) {
     // Split row into label cells (no digits) and amount cells (contain digits).
-    const labelCells = row.cells.filter((c) => !/\d/.test(faDigits(c.str)));
+    const labelCells = row.cells.filter((c) => !c.isSpace && !/\d/.test(faDigits(c.str)));
     const amtCells = row.cells
       .filter((c) => /\d/.test(faDigits(c.str)))
       .sort((a, b) => a.x - b.x);

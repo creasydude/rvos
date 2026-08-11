@@ -185,6 +185,7 @@ export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamen
       i("equity", inp.shareholdersEquity),
     ], "%"));
     calcs.push(calc("Net margin", pm * 100, "net_income / revenue", [i("net income", inp.netIncome), i("revenue", inp.revenue)], "%"));
+    if (pm > 1) warnings.push("Net margin >100%: the company's net income includes non-operating income (e.g. holding/financial-company fair-value revaluation gains) not flowing through operating revenue — treat the ratio as distorted, not a genuine margin.");
     calcs.push(calc("Asset turnover", at, "revenue / assets", [i("revenue", inp.revenue), i("assets", inp.totalAssets)], "x"));
     calcs.push(calc("Equity multiplier", em, "assets / equity", [i("assets", inp.totalAssets), i("equity", inp.shareholdersEquity)], "x"));
   } else warnings.push("DuPont ROE skipped: need net income, revenue, assets and equity");

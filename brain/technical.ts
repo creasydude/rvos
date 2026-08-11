@@ -23,13 +23,17 @@ export function analyzeTechnical(inp: TechnicalInputs): TechnicalResult {
   const calcs: Calc[] = [];
   const warnings: string[] = [];
   const { close } = inp;
-  // High/low fall back to close when absent OR empty (empty arrays otherwise
-  // break ADX/ATR which demand equal sizes). Volume stays empty when absent —
+  // Real intraday high/low must be *present* for range-based indicators
+  // (Stochastic, ATR, ADX, VWAP). Falling back to close fabricates
+  // zero-range bars (Stoch = 0, degenerate ADX DI), so when they're absent we
+  // skip those calcs and say so in warnings. Volume stays empty when absent —
   // the OBV/VWAP guards check its length against close so price is never used
   // as a volume proxy.
-  const high = inp.high && inp.high.length ? inp.high : close;
-  const low = inp.low && inp.low.length ? inp.low : close;
+  const hasOHLC = !!(inp.high && inp.high.length && inp.low && inp.low.length);
+  const high = hasOHLC ? inp.high! : close;
+  const low = hasOHLC ? inp.low! : close;
   const volume = inp.volume && inp.volume.length ? inp.volume : [];
+  if (!hasOHLC) warnings.push("Intraday high/low unavailable — Stochastic, ATR, ADX, VWAP skipped");
 
   if (close.length < 2) {
     return { calcs, warnings: ["Need at least 2 price points for technical analysis"], lastPrice: close[0] };
@@ -86,7 +90,7 @@ export function analyzeTechnical(inp: TechnicalInputs): TechnicalResult {
   }
 
   // ---- Stochastic oscillator ------------------------------------------------
-  if (close.length >= 14) {
+  if (hasOHLC && close.length >= 14) {
     const st = Stochastic.calculate({ period: 14, signalPeriod: 3, high, low, close });
     const s = last(st);
     if (s) {
@@ -96,14 +100,14 @@ export function analyzeTechnical(inp: TechnicalInputs): TechnicalResult {
   }
 
   // ---- ATR -----------------------------------------------------------------
-  if (close.length >= 14 && high.length === close.length && low.length === close.length) {
+  if (hasOHLC && close.length >= 14) {
     const atr = ATR.calculate({ period: 14, high, low, close });
     const v = last(atr);
     if (v != null) calcs.push(calc("ATR(14)", v, "Average of True Range (14)", [i("period", 14)], "num"));
   }
 
   // ---- ADX --------------------------------------------------------------
-  if (close.length >= 28) {
+  if (hasOHLC && close.length >= 28) {
     const adx = ADX.calculate({ period: 14, high, low, close });
     const a = last(adx);
     if (a) {
@@ -121,7 +125,7 @@ export function analyzeTechnical(inp: TechnicalInputs): TechnicalResult {
   }
 
   // ---- VWAP ----------------------------------------------------------------
-  if (volume.length === close.length) {
+  if (hasOHLC && volume.length === close.length) {
     const vwap = VWAP.calculate({ high, low, close, volume });
     const v = last(vwap);
     if (v != null) {

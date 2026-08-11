@@ -14,10 +14,14 @@ import path from "path";
 // which required a Windows C++ toolchain. node:sqlite ships inside Node, so
 // there is nothing to install or compile. The .db file format is identical.
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// Overridable so tests/sandbox runs use a throwaway store instead of the live
+// app's data/. The app itself leaves it defaulted to cwd/data.
+const DATA_DIR = process.env.RVOS_DATA_DIR || path.join(process.cwd(), "data");
 // data/ is a direct child of cwd, so a plain mkdirSync is enough (the
-// recursive option isn't in this @types/node's overloads).
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+// recursive option isn't in this @types/node's overloads). The inline
+// turbopackIgnore keeps Turbopack from tracing the whole project for this
+// env-derived runtime path (RVOS_DATA_DIR or cwd/data).
+if (!fs.existsSync(/* turbopackIgnore: true */ DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
 let _db: DatabaseSync | undefined;
 
@@ -82,7 +86,7 @@ function getDb(): DatabaseSync {
  * Proxy so the rest of the file can keep calling `db.prepare(...)` etc. while
  * the real connection is created lazily on first use.
  */
-const db = new Proxy({} as DatabaseSync, {
+export const db = new Proxy({} as DatabaseSync, {
   get(_t, prop) {
     const real = getDb();
     // Bind functions to the real connection — otherwise `this` inside the

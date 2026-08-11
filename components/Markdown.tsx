@@ -3,6 +3,7 @@
 import { Box } from "@chakra-ui/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { isRtlText } from "@/lib/rtl";
 
 // Renders the synthesis LLM's markdown (headings, bold, tables, lists, code)
 // as styled HTML in the dark theme. GFM (remark-gfm) adds table, strikethrough,
@@ -10,8 +11,11 @@ import remarkGfm from "remark-gfm";
 // Tables are rendered via per-element components with explicit borders so grid
 // lines always show regardless of css-prop cascading.
 export default function Markdown({ children }: { children: string }) {
+  const rtl = isRtlText(children);
+
   return (
     <Box
+      dir={rtl ? "rtl" : "ltr"}
       css={{
         "h1, h2, h3, h4": { fontWeight: "semibold", color: "ink", mt: 4, mb: 1 },
         h1: { fontSize: "xl" },
@@ -19,10 +23,10 @@ export default function Markdown({ children }: { children: string }) {
         h3: { fontSize: "md" },
         h4: { fontSize: "sm" },
         p: { mt: 2, mb: 2 },
-        "ul, ol": { pl: 5, my: 2 },
+        "ul, ol": { paddingInlineStart: 5, my: 2 },
         li: { my: 0.5 },
         a: { color: "accent.400", textDecoration: "underline" },
-        blockquote: { borderLeft: "3px solid", borderColor: "#4a4a5a", pl: 3, my: 2, color: "muted" },
+        blockquote: { borderInlineStart: "3px solid", borderColor: "#4a4a5a", paddingInlineStart: 3, my: 2, color: "muted" },
         pre: { bg: "raised", p: 3, rounded: "md", overflowX: "auto", fontSize: "xs", mt: 2, mb: 2 },
         "pre code": { bg: "transparent", p: 0 },
         code: { bg: "raised", px: 1, rounded: "sm", fontSize: "xs" },
@@ -43,7 +47,7 @@ export default function Markdown({ children }: { children: string }) {
               as="th"
               bg="#2e2e38"
               fontWeight="semibold"
-              textAlign="left"
+              textAlign="start"
               px={3}
               py={2}
               border="1px solid"

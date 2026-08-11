@@ -21,52 +21,64 @@ export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamen
   const marketCap = inp.marketCap ?? (inp.price && inp.sharesOutstanding ? inp.price * inp.sharesOutstanding : undefined);
 
   // ---- Valuation multiples vs peers --------------------------------------
-  if (inp.price != null && inp.eps) {
-    const pe = inp.price / inp.eps;
-    calcs.push(calc("P/E", pe, "price / eps", [i("price", inp.price), i("eps", inp.eps)], "x"));
-    if (inp.pePeer) {
-      const prem = (pe - inp.pePeer) / inp.pePeer * 100;
-      calcs.push(calc("P/E vs peer premium", prem, "(pe - peer_pe) / peer_pe * 100", [i("peer P/E", inp.pePeer), i("P/E", pe)], "%"));
-    }
+  // Multiples are only meaningful when the denominator is POSITIVE. A negative
+  // EPS/EBITDA/BVPS means the company is loss-making or balance-sheet-weak, and
+  // a negative P/E etc. reads as a "discount" when it's really a distress flag.
+  // So a non-positive denominator skips the multiple and says why.
+  if (inp.price != null && inp.eps != null) {
+    if (inp.eps > 0) {
+      const pe = inp.price / inp.eps;
+      calcs.push(calc("P/E", pe, "price / eps", [i("price", inp.price), i("eps", inp.eps)], "x"));
+      if (inp.pePeer) {
+        const prem = (pe - inp.pePeer) / inp.pePeer * 100;
+        calcs.push(calc("P/E vs peer premium", prem, "(pe - peer_pe) / peer_pe * 100", [i("peer P/E", inp.pePeer), i("P/E", pe)], "%"));
+      }
+    } else warnings.push("P/E skipped: EPS ≤ 0 (company is loss-making, multiple is meaningless)");
   } else warnings.push("P/E skipped: need price and EPS");
 
-  if (inp.ev != null && inp.ebitda) {
-    const evEbitda = inp.ev / inp.ebitda;
-    calcs.push(calc("EV/EBITDA", evEbitda, "ev / ebitda", [i("EV", inp.ev), i("EBITDA", inp.ebitda)], "x"));
-    if (inp.evEbitdaPeer) {
-      calcs.push(calc(
-        "EV/EBITDA vs peer premium",
-        (evEbitda - inp.evEbitdaPeer) / inp.evEbitdaPeer * 100,
-        "(ev_ebitda - peer) / peer * 100",
-        [i("peer EV/EBITDA", inp.evEbitdaPeer), i("EV/EBITDA", evEbitda)],
-      ));
-    }
+  if (inp.ev != null && inp.ebitda != null) {
+    if (inp.ebitda > 0) {
+      const evEbitda = inp.ev / inp.ebitda;
+      calcs.push(calc("EV/EBITDA", evEbitda, "ev / ebitda", [i("EV", inp.ev), i("EBITDA", inp.ebitda)], "x"));
+      if (inp.evEbitdaPeer) {
+        calcs.push(calc(
+          "EV/EBITDA vs peer premium",
+          (evEbitda - inp.evEbitdaPeer) / inp.evEbitdaPeer * 100,
+          "(ev_ebitda - peer) / peer * 100",
+          [i("peer EV/EBITDA", inp.evEbitdaPeer), i("EV/EBITDA", evEbitda)],
+        ));
+      }
+    } else warnings.push("EV/EBITDA skipped: EBITDA ≤ 0 (loss-making, multiple is meaningless)");
   } else warnings.push("EV/EBITDA skipped: need EV and EBITDA");
 
-  if (inp.price != null && inp.bookValuePerShare) {
-    const pb = inp.price / inp.bookValuePerShare;
-    calcs.push(calc("P/B", pb, "price / book_value_per_share", [i("price", inp.price), i("BVPS", inp.bookValuePerShare)], "x"));
-    if (inp.pbPeer) {
-      calcs.push(calc(
-        "P/B vs peer premium",
-        (pb - inp.pbPeer) / inp.pbPeer * 100,
-        "(pb - peer) / peer * 100",
-        [i("peer P/B", inp.pbPeer), i("P/B", pb)],
-      ));
-    }
+  if (inp.price != null && inp.bookValuePerShare != null) {
+    if (inp.bookValuePerShare > 0) {
+      const pb = inp.price / inp.bookValuePerShare;
+      calcs.push(calc("P/B", pb, "price / book_value_per_share", [i("price", inp.price), i("BVPS", inp.bookValuePerShare)], "x"));
+      if (inp.pbPeer) {
+        calcs.push(calc(
+          "P/B vs peer premium",
+          (pb - inp.pbPeer) / inp.pbPeer * 100,
+          "(pb - peer) / peer * 100",
+          [i("peer P/B", inp.pbPeer), i("P/B", pb)],
+        ));
+      }
+    } else warnings.push("P/B skipped: book value per share ≤ 0 (negative equity, multiple is meaningless)");
   } else warnings.push("P/B skipped: need price and book value per share");
 
-  if (inp.price != null && inp.salesPerShare) {
-    const ps = inp.price / inp.salesPerShare;
-    calcs.push(calc("P/S", ps, "price / sales_per_share", [i("price", inp.price), i("SPS", inp.salesPerShare)], "x"));
-    if (inp.psPeer) {
-      calcs.push(calc(
-        "P/S vs peer premium",
-        (ps - inp.psPeer) / inp.psPeer * 100,
-        "(ps - peer) / peer * 100",
-        [i("peer P/S", inp.psPeer), i("P/S", ps)],
-      ));
-    }
+  if (inp.price != null && inp.salesPerShare != null) {
+    if (inp.salesPerShare > 0) {
+      const ps = inp.price / inp.salesPerShare;
+      calcs.push(calc("P/S", ps, "price / sales_per_share", [i("price", inp.price), i("SPS", inp.salesPerShare)], "x"));
+      if (inp.psPeer) {
+        calcs.push(calc(
+          "P/S vs peer premium",
+          (ps - inp.psPeer) / inp.psPeer * 100,
+          "(ps - peer) / peer * 100",
+          [i("peer P/S", inp.psPeer), i("P/S", ps)],
+        ));
+      }
+    } else warnings.push("P/S skipped: sales per share ≤ 0, multiple is meaningless");
   } else warnings.push("P/S skipped: need price and sales per share");
 
   // ---- Graham number & margin of safety -----------------------------------

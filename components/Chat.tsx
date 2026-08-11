@@ -3,6 +3,7 @@
 import { Box, Button, Flex, Text, Textarea } from "@chakra-ui/react";
 import { useEffect, useRef, useState } from "react";
 import Markdown from "./Markdown";
+import { isRtlText } from "@/lib/rtl";
 
 export type RoleStatus = { fundamental: boolean; technical: boolean; synthesis: boolean };
 
@@ -300,6 +301,10 @@ export default function Chat({
               color={m.role === "user" ? "white" : m.role === "error" ? "red.300" : "ink"}
               borderWidth={m.role === "user" ? 0 : 1}
               borderColor={m.role === "error" ? "red.800" : "borderC"}
+              // Analysis bubbles render inside <Markdown>, which sets its own
+              // direction; raw-text bubbles (pastes, notes, errors) get theirs
+              // here so Persian output reads right-to-left.
+              dir={m.role === "assistant" && m.label === "analysis" ? undefined : isRtlText(m.text) ? "rtl" : "ltr"}
             >
               {m.role === "assistant" && (
                 <Text mb={1} fontSize="xs" fontWeight="medium" color="muted">
@@ -335,6 +340,7 @@ export default function Chat({
               color={m.role === "user" ? "white" : "ink"}
               borderWidth={m.role === "user" ? 0 : 1}
               borderColor="borderC"
+              dir={m.role === "assistant" ? undefined : isRtlText(m.text) ? "rtl" : "ltr"}
             >
               {m.role === "user" ? (
                 m.text

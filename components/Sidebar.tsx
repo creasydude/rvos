@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Button, Flex, Heading, Link, Text } from "@chakra-ui/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type RoleKey = "fundamental" | "technical" | "synthesis";
@@ -16,6 +16,7 @@ const ROLE_LABEL: Record<RoleKey, string> = {
 
 export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [roles, setRoles] = useState<Roles | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
@@ -32,6 +33,24 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
   const go = (path: string) => {
     router.push(path);
     onClose?.();
+  };
+
+  // Removes an analysis from history. If it's the one currently open, navigate
+  // back to a fresh analysis so the chat doesn't keep showing a deleted body.
+  const remove = async (h: HistoryItem) => {
+    const label = h.ticker ? h.ticker.toUpperCase() : h.title || h.kind;
+    if (!window.confirm(`Remove "${label}" from history?`)) return;
+    try {
+      await fetch(`/api/analyses?id=${encodeURIComponent(h.id)}`, { method: "DELETE" });
+    } catch {
+      // Network failure: leave the row in place and let the user retry.
+      return;
+    }
+    if (searchParams.get("id") === h.id) {
+      router.push("/");
+      onClose?.();
+    }
+    refresh();
   };
 
   const content = (
@@ -53,6 +72,13 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
           </svg>
           New analysis
         </Button>
+        <Button w="full" variant="ghost" color="muted" size="sm" justifyContent="flex-start" mt={1} onClick={() => go("/market")}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
+            <path d="M3 3v18h18" />
+            <path d="M7 14l4-6 3 3 5-7" />
+          </svg>
+          Sync &amp; Education Center
+        </Button>
       </Box>
 
       {missing.length > 0 && (
@@ -73,25 +99,46 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         {history.length === 0 && <Text px={1} fontSize="xs" color="muted">No analyses yet.</Text>}
         <Flex flexDir="column" gap={1} align="stretch">
           {history.map((h) => (
-            <Button
-              key={h.id}
-              onClick={() => go(`/?id=${h.id}`)}
-              variant="ghost"
-              justifyContent="flex-start"
-              size="sm"
-              color="ink"
-              _hover={{ bg: "raised" }}
-            >
-              <Text as="span" fontWeight="medium" truncate>
-                {h.ticker ? h.ticker.toUpperCase() : h.title || h.kind}
-              </Text>
-              <Text as="span" ml={2} fontSize="xs" color="muted">
-                {h.kind === "analysis" ? "analysis" : "notes"}
-              </Text>
-              <Text as="span" ml={1} fontSize="10px" color="muted">
-                {new Date(h.createdAt).toLocaleDateString()}
-              </Text>
-            </Button>
+            <Flex key={h.id} align="center" gap={0.5}>
+              <Button
+                onClick={() => go(`/?id=${h.id}`)}
+                variant="ghost"
+                justifyContent="flex-start"
+                size="sm"
+                color="ink"
+                _hover={{ bg: "raised" }}
+                flex="1"
+              >
+                <Text as="span" fontWeight="medium" truncate>
+                  {h.ticker ? h.ticker.toUpperCase() : h.title || h.kind}
+                </Text>
+                <Text as="span" ml={2} fontSize="xs" color="muted">
+                  {h.kind === "analysis" ? "analysis" : "notes"}
+                </Text>
+                <Text as="span" ml={1} fontSize="10px" color="muted">
+                  {new Date(h.createdAt).toLocaleDateString()}
+                </Text>
+              </Button>
+              <Box
+                as="button"
+                onClick={() => remove(h)}
+                aria-label={`Remove ${h.ticker || h.title || "this analysis"}`}
+                title="Remove from history"
+                color="muted"
+                p={1}
+                rounded="md"
+                flexShrink={0}
+                _hover={{ color: "red.400", bg: "raised" }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <line x1="10" y1="11" x2="10" y2="17" />
+                  <line x1="14" y1="11" x2="14" y2="17" />
+                </svg>
+              </Box>
+            </Flex>
           ))}
         </Flex>
       </Box>

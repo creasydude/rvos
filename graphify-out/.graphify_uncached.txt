@@ -1,0 +1,5 @@
+C:\Personal Files\Projects\rvos\AGENTS.md
+C:\Personal Files\Projects\rvos\CLAUDE.md
+C:\Personal Files\Projects\rvos\README.fa.md
+C:\Personal Files\Projects\rvos\README.md
+C:\Personal Files\Projects\rvos\rvos-data-feasibility-report.md

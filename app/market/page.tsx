@@ -35,6 +35,7 @@ type SyncResult = {
   flows?: number;
   statements?: number;
   fundamentalItems?: number;
+  reports?: number;
 };
 
 type LogEntry = { id: number; kind: "ok" | "err" | "info"; text: string };
@@ -49,6 +50,7 @@ const COUNT_LABELS: [string, string][] = [
   ["codal_letters", "Codal letters"],
   ["statement_docs", "Statement PDFs"],
   ["fundamentals", "Fundamental line items"],
+  ["codal_reports", "Important reports"],
 ];
 
 let logId = 0;
@@ -60,6 +62,9 @@ export default function MarketPage() {
   const [analyzeSymbol, setAnalyzeSymbol] = useState("");
   const [analysis, setAnalysis] = useState<Record<string, unknown> | null>(null);
   const [analysing, setAnalysing] = useState(false);
+  const [writeup, setWriteup] = useState("");
+  const [writeupBusy, setWriteupBusy] = useState(false);
+  const [writeupId, setWriteupId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -101,6 +106,35 @@ export default function MarketPage() {
     setAnalysing(false);
   };
 
+  // AI write-up: POST /api/analyze {symbol} — the route builds the enriched rial
+  // notes (brain ratios + statement/report context) and streams the synthesis
+  // LLM's write-up; the saved analysis id enables the "Open in chat" link.
+  const runWriteup = async (sym: string) => {
+    if (writeupBusy) return;
+    setWriteupBusy(true);
+    setWriteup("");
+    setWriteupId(null);
+    push("info", `▶ AI write-up ${sym} …`);
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: sym }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        push("err", `✖ AI write-up ${sym}: ${data.error ?? res.status}`);
+        return;
+      }
+      const { id } = await parseSSE(res, (delta) => setWriteup((w) => w + delta));
+      setWriteupId(id ?? null);
+      push("ok", `✔ AI write-up ${sym} done${id ? ` — open in chat (id ${id.slice(0, 8)}…)` : ""}`);
+    } catch (e) {
+      push("err", `✖ AI write-up ${sym} threw: ${(e as Error).message}`);
+    }
+    setWriteupBusy(false);
+  };
+
   const runSync = async (payload: Record<string, unknown>, label: string) => {
     if (busy) return;
     setBusy(label);
@@ -122,7 +156,8 @@ export default function MarketPage() {
         push(r.ok ? "ok" : "err",
           r.ok
             ? `✔ ${r.symbol ?? payload.symbol}: ${r.bars} bars, ${r.adjusts} adjusts, ${r.shares} share events, ${r.flows} flow days` +
-              (r.statements != null ? ` · ${r.statements} statements → ${r.fundamentalItems ?? 0} fundamental line items` : "")
+              (r.statements != null ? ` · ${r.statements} statements → ${r.fundamentalItems ?? 0} fundamental line items` : "") +
+              (r.reports != null ? ` · ${r.reports} important reports` : "")
             : `✖ ${payload.symbol}: ${r.reason}`);
       } else {
         push("ok", `✔ EOD sync: ${data.succeeded}/${data.total} instruments synced`);
@@ -274,7 +309,32 @@ export default function MarketPage() {
                 >
                   {analysing ? "Analyzing…" : "Analyze"}
                 </Button>
+                <Button
+                  variant="outline"
+                  borderColor="borderC"
+                  size="sm"
+                  disabled={!analyzeSymbol.trim() || writeupBusy}
+                  onClick={() => analyzeSymbol.trim() && runWriteup(analyzeSymbol.trim())}
+                >
+                  {writeupBusy ? "Writing…" : "AI write-up"}
+                </Button>
               </Flex>
+
+              {writeup && (
+                <Box mt={4}>
+                  <Flex align="center" justify="space-between" mb={1}>
+                    <Text fontSize="xs" color="muted">AI write-up (synced data + statement context → synthesis LLM)</Text>
+                    {writeupId && (
+                      <Link href={`/?id=${writeupId}`} style={{ color: "#e8e8ec", textDecoration: "none", fontSize: "12px" }}>
+                        Open in chat ↗
+                      </Link>
+                    )}
+                  </Flex>
+                  <Box fontSize="xs" lineHeight="1.7" whiteSpace="pre-wrap" fontFamily="body" bg="bg" p={3} borderWidth="1px" borderColor="borderC" rounded="md" maxH="420px" overflowY="auto">
+                    {writeup}
+                  </Box>
+                </Box>
+              )}
 
               {analysis && (
                 <Box mt={4} fontSize="xs" fontFamily="mono" lineHeight="1.7">
@@ -312,6 +372,7 @@ export default function MarketPage() {
                       ))}
                     </Box>
                   ) : null}
+                  <FundamentalContext context={((analysis.fundamental as { context?: unknown }).context ?? null) as FContext | null} />
                 </Box>
               )}
             </Box>
@@ -487,4 +548,126 @@ function ModelCard({ name, formula, note }: { name: string; formula: string; not
       <Text fontSize="xs" color="muted" mt={1}>{note}</Text>
     </Box>
   );
+}
+
+// ---- LLM fundamental context (the statement/report bundle the AI write-up uses) ----
+
+type FLineItem = { metric: string; label: string; value: number; fy: number };
+type FReport = { kind: string; title: string; published: string | null; excerpt: string };
+type FContext = {
+  symbol: string | null;
+  name: string | null;
+  fy: number | null;
+  periodEnd: string | null;
+  lineItems: FLineItem[];
+  statement: { title: string; periodEnd: string | null; excerpt: string } | null;
+  reports: FReport[];
+  units: string;
+};
+
+function FundamentalContext({ context }: { context: FContext | null }) {
+  if (!context) return null;
+  if (!context.lineItems.length && !context.statement && !context.reports.length) return null;
+  return (
+    <Box mt={2} fontSize="xs" lineHeight="1.7">
+      <Text color="accent.300" fontWeight="semibold" mb={1}>LLM context — what the AI write-up sees</Text>
+      <Text color="muted">
+        {context.symbol ?? ""}
+        {context.name ? ` — ${context.name}` : ""}
+        {context.fy != null ? ` · FY ${context.fy}` : ""}
+        {context.periodEnd ? ` · period ${context.periodEnd}` : ""}
+        {context.units === "rial" ? " · values in rial" : ""}
+      </Text>
+
+      {context.lineItems.length ? (
+        <Box mt={1} borderWidth="1px" borderColor="borderC" rounded="md" bg="bg" p={2}>
+          {context.lineItems.map((li) => (
+            <Flex key={`${li.fy}-${li.metric}`} justify="space-between" gap={3}>
+              <Text truncate>{li.label}</Text>
+              <Text color="muted">
+                {li.value.toLocaleString("en-US")} <Text as="span" color="borderC">ریال · FY {li.fy}</Text>
+              </Text>
+            </Flex>
+          ))}
+        </Box>
+      ) : null}
+
+      {context.statement ? (
+        <details>
+          <summary style={{ cursor: "pointer", marginTop: "6px" }}>
+            Statement — {context.statement.title} {context.statement.periodEnd ? `(${context.statement.periodEnd})` : ""}
+          </summary>
+          <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
+            {context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)"}
+          </Text>
+        </details>
+      ) : null}
+
+      {context.reports.map((r) => (
+        <details key={`${r.kind}-${r.title}`}>
+          <summary style={{ cursor: "pointer", marginTop: "6px" }}>
+            {kindLabel(r.kind)} — {r.title} {r.published ? `(${r.published})` : ""}
+          </summary>
+          <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
+            {r.excerpt || "(no text)"}
+          </Text>
+        </details>
+      ))}
+    </Box>
+  );
+}
+
+function kindLabel(kind: string): string {
+  switch (kind) {
+    case "interpretive": return "گزارش تفسیری";
+    case "board": return "گزارش هیئت مدیره";
+    case "forecast": return "پیش‌بینی سود";
+    case "disclosure": return "افشای اطلاعات با اهمیت";
+    default: return kind || "report";
+  }
+}
+
+/** Parses the app's SSE (data: {"delta":…} … {"done":true, "id":…}). Mirrors components/Chat.tsx. */
+function parseSSE(res: Response, onDelta: (d: string) => void): Promise<{ text: string; id?: string }> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let full = "";
+  let outId: string | undefined;
+  return new Promise((resolve, reject) => {
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf("\n\n")) !== -1) {
+            const event = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            for (const line of event.split("\n")) {
+              if (line.startsWith("data:")) {
+                const payload = line.slice(5).trim();
+                if (payload === "[DONE]") continue;
+                try {
+                  const json = JSON.parse(payload);
+                  if (json.delta) {
+                    onDelta(json.delta);
+                    full += json.delta;
+                  }
+                  if (json.done) {
+                    if (json.id) outId = json.id;
+                    resolve({ text: full, id: json.id });
+                  }
+                } catch {}
+              }
+            }
+          }
+        }
+        resolve({ text: full, id: outId });
+      } catch (e) {
+        reject(e);
+      }
+    })();
+  });
 }

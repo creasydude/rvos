@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { streamAnalysis } from "@/lib/analyze";
+import { streamMarketAnalysis } from "@/lib/market/writeup";
 import { saveAnalysis } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -9,9 +10,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const fundamental = typeof body.fundamental === "string" ? body.fundamental : undefined;
   const technical = typeof body.technical === "string" ? body.technical : undefined;
+  const symbol = typeof body.symbol === "string" ? body.symbol.trim() : undefined;
 
-  if (!fundamental && !technical) {
-    return new Response(JSON.stringify({ error: "Need at least one side" }), {
+  if (!symbol && !fundamental && !technical) {
+    return new Response(JSON.stringify({ error: "Need a symbol, or at least one notes side" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
@@ -19,7 +21,14 @@ export async function POST(req: NextRequest) {
 
   let result: { stream: ReadableStream<string>; context: { fundamental?: string; technical?: string; brain: string; ticker?: string } };
   try {
-    result = await streamAnalysis({ fundamental, technical });
+    if (symbol && !fundamental && !technical) {
+      // Market write-up: build the enriched rial notes from the synced store and
+      // stream the synthesis LLM's write-up. (A symbol with pasted notes still
+      // uses the paste path — symbol here is a shortcut for "use my synced data".)
+      result = await streamMarketAnalysis(symbol);
+    } else {
+      result = await streamAnalysis({ fundamental, technical });
+    }
   } catch (e) {
     console.error("ANALYZE THREW:", e);
     return new Response(JSON.stringify({ error: (e as Error).message || "Analysis failed" }), {

@@ -20,8 +20,17 @@ import {
   TseShare,
   TseClientFlow,
 } from "./tsetmc";
-import { searchLetters, downloadPdf, pdfUrl, CODAL_PAGE_SIZE, type CodalLetter } from "./codal";
-import { parseAndLoadStatements } from "./parse";
+import {
+  searchLetters,
+  downloadPdf,
+  downloadExcel,
+  downloadLetterHtml,
+  pdfUrl,
+  excelUrl,
+  CODAL_PAGE_SIZE,
+  type CodalLetter,
+} from "./codal";
+import { parseAndLoadStatements, extractPdfText, htmlToText } from "./parse";
 import {
   periodEndFromTitle,
   jalaliYear,
@@ -60,14 +69,15 @@ export async function resolveInsCode(symbolOrCode: string): Promise<string | nul
 
 // ---- per-symbol Cotal financial-statement sync ------------------------------
 //
-// The Cotal search API does not filter by symbol for anonymous callers, so we
-// page through the periodic-statement feed (letterType=6, 12-month period) for a
-// finite publish window and filter locally. The feed is ordered by publish date
-// desc, and statements for the current reporting season appear within the first
-// handful of pages (verified live: غالبر's audited FY1404 statements on pages 2-7
-// of a ~160-day window). Prior-year statements are searched in an earlier window
-// and only when the current season didn't already yield the most recent fiscal
-// year, so the common case stays fast.
+// The Cotal search API filters by symbol server-side via the `Symbol=` param
+// (verified live: Symbol=فولاد → all results carry that ticker). We pass it so
+// a symbol's own statements are reachable in a few pages instead of being buried
+// in the global publish-date feed. The feed is ordered by publish date desc, and
+// statements for the current reporting season appear within the first handful of
+// pages (verified live: غالبر's audited FY1404 statements on pages 2-7 of a
+// ~160-day window). Prior-year statements are searched in an earlier window and
+// only when the current season didn't already yield the most recent fiscal year,
+// so the common case stays fast.
 
 /** Strip ZWNJ/ZWNJ-like marks and collapse spaces so the title match is stable. */
 function normTitle(s: string): string {
@@ -114,10 +124,10 @@ export async function findStatementLetters(
   const maxPages = opts?.maxPages ?? 12;
   const byPeriod = new Map<string, CodalLetter>();
   for (let page = 1; page <= maxPages; page++) {
-    const r = await searchLetters({ letterType: 6, period: 12, fromDate, toDate, page });
+    const r = await searchLetters({ symbol, letterType: 6, period: 12, fromDate, toDate, page });
     if (!r.letters.length) break;
     for (const l of r.letters) {
-      if (l.Symbol !== symbol || !isStatementLetter(l)) continue;
+      if (!isStatementLetter(l)) continue;
       const pe = periodEndFromTitle(l.Title ?? "");
       const key = pe ?? `x${l.TracingNo ?? 0}`;
       const cur = byPeriod.get(key);
@@ -208,17 +218,21 @@ export async function syncCodalForSymbol(
     if (!periodEnd) continue;
     upsertLetter(l);
     let pdfPath: string | null = null;
+    let rawText: string | null = null;
     if (download && l.HasPdf && pdfUrl(l)) {
       try {
         const buf = await downloadPdf(pdfUrl(l)!);
         const file = path.join(FILINGS_DIR, `${l.TracingNo}.pdf`);
         fs.writeFileSync(file, Buffer.from(buf));
         pdfPath = file;
+        // The PDF holds the narrative statement text (management notes, notes to
+        // accounts) that the line-item parser skips — keep it for the LLM context.
+        rawText = await extractPdfText(buf).catch(() => null);
       } catch (e) {
         console.error("[sync] statement pdf download failed", l.TracingNo, (e as Error).message);
       }
     }
-    upsertStatementDoc(l, pdfPath, periodEnd, insCode);
+    upsertStatementDoc(l, pdfPath, periodEnd, insCode, rawText);
     statements++;
   }
 
@@ -232,6 +246,197 @@ export async function syncCodalForSymbol(
     }
   }
   return { ok: true, insCode, symbol, statements, items };
+}
+
+// ---- important statements -----------------------------------------------------
+//
+// Beyond the periodic financial statements above, a symbol's other important
+// Codal disclosures carry the most qualitative signal for an LLM: interpretive
+// management reports (گزارش تفسیری مدیریت), board reports (گزارش هیئت مدیره),
+// earnings forecasts (پیش‌بینی سود هر سهم) and material disclosures (افشای
+// اطلاعات با اهمیت). The periodic-statement path filters these OUT on purpose;
+// this path pulls them in, downloads the PDF/Excel, extracts the full text and
+// files it in `codal_reports` so the fundamental-context loader can hand the
+// LLM real statement content — not just computed ratios.
+//
+// To add a new kind, add an entry to REPORT_KINDS and (optionally) a surface in
+// lib/market/context.ts. This classification set is the one configurable knob.
+
+const YE = "ي"; // Arabic Yeh (canonical) — normalize Persian/Arabic variants to it
+
+/** Strip ZWNJ + collapse whitespace AND normalize Yeh variants for stable regex. */
+function normPersian(s: string): string {
+  return normTitle(s).replace(/[یى]/g, YE);
+}
+
+export type ReportKind = "interpretive" | "board" | "forecast" | "disclosure";
+
+const REPORT_KINDS: { kind: ReportKind; re: RegExp }[] = [
+  { kind: "interpretive", re: /گزارش\s*تفسير/ },
+  { kind: "board", re: /گزارش\s*(فعاليت\s*)?هي(ئ|ا)ت\s*مدير/ },
+  { kind: "forecast", re: /پيش\s*بين\s*سود|برآورد\s*سود|سود\s*و\s*زيان\s*پيش/ },
+  { kind: "disclosure", re: /افشاي\s*اطلاعات\s*با\s*اهميت|گزارش\s*توجيه/ },
+];
+
+/** Titles that share keywords with reports but are not fundamental material. */
+const REPORT_NOISE_RE =
+  /دعوت\s*به\s*مجمع|آگهي|مزاي[د]ه|اساسنامه|پورتفو|فهرست\s*دريافت|اوراق\s*مشارکت|پذيره\s*نويس|دارايي\s*هاي\s*غير\s*جاري\s*در\s*تملک/;
+
+/** Min chars an HTML-letter body must have to be stored as report text. The Codal
+ * Attachment.aspx page shell is ~230 chars of chrome (ضمائم / a log line) when
+ * the real body is JS-rendered — reject that so a text-less report stays text-less
+ * (honest) instead of polluting the LLM context with boilerplate. */
+const MIN_HTML_BODY = 400;
+
+/**
+ * Classify a Codal letter title into an important-statement kind, or null when
+ * the letter is not one we track (noise, or not one of the four kinds).
+ */
+export function classifyReportKind(title: string | null | undefined): ReportKind | null {
+  const t = normPersian(title ?? "");
+  if (!t) return null;
+  if (REPORT_NOISE_RE.test(t)) return null;
+  for (const r of REPORT_KINDS) if (r.re.test(t)) return r.kind;
+  return null;
+}
+
+/**
+ * Search the Codal feed for a symbol's important statements. One symbol-scoped
+ * all-letter sweep (letterType -1) over a ~370-day window: with the server-side
+ * Symbol= filter a whole year is only a handful of pages (verified live: فولاد
+ * 197 letters/10 pages, غالبر 96/5), and the qualitative reports live in the
+ * general feed rather than the periodic-statement feed (letterType 6) that
+ * findStatementLetters already covers. Returns every matching letter (classified,
+ * deduped by TracingNo) — unlike findStatementLetters, we keep ALL of them, since
+ * each report is distinct.
+ */
+export async function findImportantLetters(
+  symbol: string,
+  opts?: { fromDate?: string; toDate?: string; maxPages?: number },
+): Promise<{ letter: CodalLetter; kind: ReportKind }[]> {
+  const fromDate = opts?.fromDate ?? daysAgoJalali(370);
+  const toDate = opts?.toDate ?? daysAgoJalali(0);
+  const maxPages = opts?.maxPages ?? 12;
+  const out = new Map<number, { letter: CodalLetter; kind: ReportKind }>();
+  for (let page = 1; page <= maxPages; page++) {
+    const r = await searchLetters({ symbol, letterType: -1, period: -1, fromDate, toDate, page });
+    if (!r.letters.length) break;
+    for (const l of r.letters) {
+      if (!l.TracingNo || out.has(l.TracingNo)) continue;
+      const kind = classifyReportKind(l.Title);
+      if (kind) out.set(l.TracingNo, { letter: l, kind });
+    }
+    if (r.letters.length < CODAL_PAGE_SIZE) break;
+  }
+  return [...out.values()];
+}
+
+export type ImportantStatementsResult = {
+  ok: boolean;
+  insCode?: string;
+  symbol?: string;
+  reports?: number; // newly stored this run
+  total?: number; // all tracked reports for the symbol
+  reason?: string;
+};
+
+/**
+ * Pull a symbol's important statements (interpretive/board/forecast/disclosure),
+ * download and extract their text, and file them in `codal_reports`. Best-effort:
+ * never throws; a throttled search or failed PDF surfaces in the counts.
+ */
+export async function syncImportantStatements(
+  symbolOrCode: string,
+  opts?: { symbol?: string; download?: boolean; maxPages?: number },
+): Promise<ImportantStatementsResult> {
+  const download = opts?.download ?? true;
+  const insCode = await resolveInsCode(symbolOrCode);
+  if (!insCode) return { ok: false, reason: "instrument not found" };
+
+  let symbol = opts?.symbol ?? symbolOrCode;
+  if (!opts?.symbol) {
+    try {
+      const q = await getInstrumentInfo(insCode);
+      if (q?.lVal18AFC) symbol = q.lVal18AFC;
+    } catch (e) {
+      console.error("[sync] instrument info failed", insCode, (e as Error).message);
+    }
+  }
+
+  let found: { letter: CodalLetter; kind: ReportKind }[] = [];
+  try {
+    found = await findImportantLetters(symbol, { maxPages: opts?.maxPages });
+  } catch (e) {
+    console.error("[sync] important statement search failed", symbol, (e as Error).message);
+  }
+
+  if (!fs.existsSync(FILINGS_DIR)) fs.mkdirSync(FILINGS_DIR);
+  const fetchBody = async (l: CodalLetter): Promise<{ pdfPath: string | null; rawText: string | null }> => {
+    let pdfPath: string | null = null;
+    let rawText: string | null = null;
+    if (download && l.HasPdf && pdfUrl(l)) {
+      try {
+        const buf = await downloadPdf(pdfUrl(l)!);
+        const file = path.join(FILINGS_DIR, `${l.TracingNo}.pdf`);
+        fs.writeFileSync(file, Buffer.from(buf));
+        pdfPath = file;
+        rawText = await extractPdfText(Buffer.from(buf));
+      } catch (e) {
+        console.error("[sync] important report pdf download/extract failed", l.TracingNo, (e as Error).message);
+      }
+    }
+    if (rawText == null && l.HasExcel && excelUrl(l)) {
+      try {
+        rawText = htmlToText(await downloadExcel(excelUrl(l)!));
+      } catch (e) {
+        console.error("[sync] important report excel text failed", l.TracingNo, (e as Error).message);
+      }
+    }
+    // Attachment-less reports (e.g. board reports) render their body on the Codal
+    // detail page — pull it so the report still contributes text to the LLM. The
+    // page shell carries ~40 chars of chrome (ضمائم / a JS line / a log entry)
+    // when the real body is JS-rendered, so accept the extraction only when it
+    // holds substantive text — otherwise leave the report text-less (honest: we
+    // don't have the content) rather than store chrome as if it were content.
+    if (rawText == null && l.Url) {
+      try {
+        const t = htmlToText(await downloadLetterHtml(l));
+        if (t.trim().length >= MIN_HTML_BODY) rawText = t;
+      } catch (e) {
+        console.error("[sync] important report html body failed", l.TracingNo, (e as Error).message);
+      }
+    }
+    return { pdfPath, rawText };
+  };
+
+  let stored = 0;
+  for (const { letter: l, kind } of found) {
+    if (!l.TracingNo) continue;
+    // Keep the letter metadata (Url, HasHtml…) so we know what we saved and could
+    // refetch the body later. codal_letters also feeds the UI's letter history.
+    upsertLetter(l);
+    const existing = db.prepare("SELECT raw_text, pdf_path FROM codal_reports WHERE tracing_no = ?").get(l.TracingNo) as
+      | { raw_text: string | null; pdf_path: string | null }
+      | undefined;
+    if (existing) {
+      // Refresh metadata; if a previous sync stored the report without any text
+      // (extraction failed, or it was filed before the HTML-body fallback), try
+      // once more to recover the body — keeping the pdf_path we already have.
+      if (existing.raw_text == null || existing.raw_text.length === 0) {
+        const { rawText } = await fetchBody(l);
+        upsertReport(l, kind, existing.pdf_path, rawText, insCode);
+      } else {
+        upsertReport(l, kind, null, null, insCode);
+      }
+      continue;
+    }
+    const { pdfPath, rawText } = await fetchBody(l);
+    upsertReport(l, kind, pdfPath, rawText, insCode);
+    stored++;
+  }
+
+  const totalRow = db.prepare("SELECT COUNT(*) AS n FROM codal_reports WHERE ins_code = ?").get(insCode) as { n: number } | undefined;
+  return { ok: true, insCode, symbol, reports: stored, total: Number(totalRow?.n ?? 0) };
 }
 
 // ---- upsert helpers ----------------------------------------------------------
@@ -437,18 +642,52 @@ function upsertLetter(l: CodalLetter) {
   );
 }
 
-function upsertStatementDoc(l: CodalLetter, pdfPath: string | null, periodEnd: string | null, insCode: string | null) {
+function upsertStatementDoc(l: CodalLetter, pdfPath: string | null, periodEnd: string | null, insCode: string | null, rawText?: string | null) {
   const fy = periodEnd ? jalaliYear(periodEnd) : 0;
   const exUrl = l.ExcelUrl ?? null;
   db.prepare(
     `INSERT INTO statement_docs
-       (tracing_no, ins_code, symbol, letter_code, title, period_end, fy, pdf_path, excel_url, parsed_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)
+       (tracing_no, ins_code, symbol, letter_code, title, period_end, fy, pdf_path, excel_url, raw_text, parsed_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(tracing_no) DO UPDATE SET
        ins_code=excluded.ins_code, symbol=excluded.symbol, letter_code=excluded.letter_code,
        title=excluded.title, period_end=excluded.period_end, fy=excluded.fy,
-       pdf_path=excluded.pdf_path, excel_url=excluded.excel_url, parsed_at=excluded.parsed_at`,
-  ).run(l.TracingNo ?? 0, insCode, l.Symbol ?? null, l.LetterCode ?? null, l.Title ?? null, periodEnd, fy || null, pdfPath, exUrl, null);
+       pdf_path=excluded.pdf_path, excel_url=excluded.excel_url,
+       raw_text=COALESCE(excluded.raw_text, statement_docs.raw_text), parsed_at=excluded.parsed_at`,
+  ).run(l.TracingNo ?? 0, insCode, l.Symbol ?? null, l.LetterCode ?? null, l.Title ?? null, periodEnd, fy || null, pdfPath, exUrl, rawText ?? null, null);
+}
+
+function upsertReport(l: CodalLetter, kind: ReportKind | null, pdfPath: string | null, rawText: string | null, insCode: string | null) {
+  const periodEnd = periodEndFromTitle(l.Title ?? "");
+  const fy = periodEnd ? jalaliYear(periodEnd) : 0;
+  db.prepare(
+    `INSERT INTO codal_reports
+       (tracing_no, ins_code, symbol, company_name, title, letter_code, letter_type,
+        kind, period_end, fy, sent_at, published_at, pdf_path, raw_text, fetched_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(tracing_no) DO UPDATE SET
+       ins_code=excluded.ins_code, symbol=excluded.symbol, company_name=excluded.company_name,
+       title=excluded.title, letter_code=excluded.letter_code, kind=excluded.kind,
+       period_end=excluded.period_end, fy=excluded.fy, sent_at=excluded.sent_at,
+       published_at=excluded.published_at, pdf_path=excluded.pdf_path,
+       raw_text=COALESCE(excluded.raw_text, codal_reports.raw_text), fetched_at=excluded.fetched_at`,
+  ).run(
+    l.TracingNo ?? 0,
+    insCode,
+    l.Symbol ?? null,
+    l.CompanyName ?? null,
+    l.Title ?? null,
+    l.LetterCode ?? null,
+    null, // letter_type — not returned by search v2/q
+    kind,
+    periodEnd,
+    fy || null,
+    l.SentDateTime ?? null,
+    persianDateTimeToEpoch(l.PublishDateTime),
+    pdfPath,
+    rawText,
+    Date.now(),
+  );
 }
 
 // ---- public sync entry points -------------------------------------------------
@@ -464,6 +703,7 @@ export type SyncResult = {
   flows?: number;
   statements?: number; // distinct financial-statement docs persisted from Cotal
   fundamentalItems?: number; // parsed line items in `fundamentals`
+  reports?: number; // important statements (interpretive/board/forecast/disclosure) stored
 };
 
 export async function syncSymbol(symbolOrCode: string): Promise<SyncResult> {
@@ -493,6 +733,15 @@ export async function syncSymbol(symbolOrCode: string): Promise<SyncResult> {
   } catch (e) {
     console.error("[sync] codal fundamentals sync failed", insCode, (e as Error).message);
   }
+  // Important statements (interpretive/board/forecast/disclosure) give the LLM
+  // qualitative context on top of the numbers. Best-effort like the codal block.
+  let reports: number | undefined;
+  try {
+    const r = await syncImportantStatements(insCode, { symbol: quote.lVal18AFC ?? symbolOrCode });
+    reports = r.reports;
+  } catch (e) {
+    console.error("[sync] important statements sync failed", insCode, (e as Error).message);
+  }
   return {
     ok: true,
     insCode,
@@ -503,6 +752,7 @@ export async function syncSymbol(symbolOrCode: string): Promise<SyncResult> {
     flows: flows.length,
     statements,
     fundamentalItems,
+    reports,
   };
 }
 

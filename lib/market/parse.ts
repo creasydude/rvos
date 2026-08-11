@@ -300,12 +300,10 @@ export function parseHtml(html: string): { metric: MetricKey; value: number }[] 
 }
 
 /**
- * Extract [metric, value] from a statement PDF buffer using positional layout.
- * `value` is scaled to Rial (per_share metrics stay as-is).
- * NOTE: PDF text extraction scrambles digit sequences in Codal statements.
- * This is kept as a fallback; parseHtml() is preferred.
+ * Lazy-load pdfjs and collect every page's text items into positional rows
+ * (one row per y-bucket, cells carrying their x so columns can be re-sorted).
  */
-export async function parsePdf(buf: Buffer): Promise<{ metric: MetricKey; value: number }[]> {
+async function getPdfRows(buf: ArrayBuffer | ArrayBufferView): Promise<Row[]> {
   let pdfjs: Pdfjs;
   try {
     const mod = (await import("pdfjs-dist/legacy/build/pdf.js")) as any;
@@ -313,7 +311,12 @@ export async function parsePdf(buf: Buffer): Promise<{ metric: MetricKey; value:
   } catch (e) {
     throw new Error(`pdfjs-dist unavailable: ${(e as Error).message}`);
   }
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+  // pdfjs rejects Node Buffer instances with "provide binary data as Uint8Array,
+  // rather than Buffer" — copy into a plain Uint8Array (Buffer is a Uint8Array
+  // subclass, so the instanceof branch must still copy). ArrayBuffer becomes a
+  // bare view of the same bytes.
+  const raw = buf instanceof Uint8Array ? Uint8Array.from(buf) : new Uint8Array(buf as ArrayBuffer);
+  const doc = await pdfjs.getDocument({ data: raw }).promise;
 
   const rows: Row[] = [];
   for (let p = 1; p <= doc.numPages; p++) {
@@ -332,6 +335,46 @@ export async function parsePdf(buf: Buffer): Promise<{ metric: MetricKey; value:
     for (const [y, cells] of byY) rows.push({ y, cells });
   }
   rows.sort((a, b) => (b.y - a.y) || (a.cells[0].x - b.cells[0].x));
+  return rows;
+}
+
+/**
+ * Extract the FULL readable text from a statement PDF buffer. Unlike parsePdf
+ * this keeps every word (not just the rows that match a metric pattern), so the
+ * fundamental context can hand the LLM the narrative — notes, management
+ * commentary, contingencies — not just the line-item numbers.
+ * NOTE: Codal statements scramble digit sequences in the content stream; the
+ * words are intact, so this is good for narrative, never for exact figures.
+ */
+export async function extractPdfText(buf: ArrayBuffer | ArrayBufferView): Promise<string> {
+  const rows = await getPdfRows(buf);
+  return rows.map((r) => r.cells.map((c) => c.str).join(" ")).join("\n");
+}
+
+/** Strip tags/entities from Codal's mso-HTML "Excel" attachment → plain text. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#?\w+;/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Extract [metric, value] from a statement PDF buffer using positional layout.
+ * `value` is scaled to Rial (per_share metrics stay as-is).
+ * NOTE: PDF text extraction scrambles digit sequences in Codal statements.
+ * This is kept as a fallback; parseHtml() is preferred.
+ */
+export async function parsePdf(buf: ArrayBuffer | ArrayBufferView): Promise<{ metric: MetricKey; value: number }[]> {
+  const rows = await getPdfRows(buf);
 
   const text = rows.map((r) => r.cells.map((c) => c.str).join(" ")).join("\n");
   const realUnit = detectUnit(text);
@@ -394,31 +437,49 @@ export async function parseAndLoadStatements(insCode: string): Promise<{ items: 
   for (const d of docs) {
     try {
       let rows: { metric: MetricKey; value: number }[] = [];
+      let rawText: string | null = null;
+      let htmlText: string | null = null;
 
-      // Prefer Excel HTML (clean numbers)
+      // Full-text narrative for the fundamental context. Prefer the PDF when a
+      // file is on disk (it carries the notes/footnotes/management commentary);
+      // fall back to the Excel mso-HTML text (numeric tables) otherwise.
+      const abs = d.pdf_path ? (path.isAbsolute(d.pdf_path) ? d.pdf_path : path.join(/* turbopackIgnore: true */ process.cwd(), d.pdf_path)) : null;
+      if (abs && fs.existsSync(abs)) {
+        try {
+          rawText = await extractPdfText(fs.readFileSync(abs));
+        } catch (e) {
+          console.warn("pdf text extraction failed for", d.tracing_no, (e as Error).message);
+        }
+      }
+
+      // Numbers prefer Excel HTML (clean); PDF is the fallback (digits scrambled).
       if (d.excel_url) {
         try {
           const url = d.excel_url.startsWith("http") ? d.excel_url : `https://www.codal.ir/${d.excel_url}`;
           const html = await downloadExcel(url);
+          htmlText = htmlToText(html);
           rows = parseHtml(html);
         } catch (e) {
           console.warn("excel download/parse failed for", d.tracing_no, (e as Error).message);
         }
       }
-
-      // Fallback to PDF (digits may be scrambled)
-      if (!rows.length && d.pdf_path) {
-        const abs = path.isAbsolute(d.pdf_path) ? d.pdf_path : path.join(process.cwd(), d.pdf_path);
-        if (fs.existsSync(abs)) {
+      if (!rows.length && abs && fs.existsSync(abs)) {
+        try {
           rows = await parsePdf(fs.readFileSync(abs));
+        } catch (e) {
+          console.warn("pdf parse failed for", d.tracing_no, (e as Error).message);
         }
       }
 
+      const effectiveText = rawText ?? htmlText;
       if (rows.length) {
         upsertRows(insCode, d.fy as number, rows);
-        db.prepare("UPDATE statement_docs SET parsed_at = ? WHERE tracing_no = ?").run(Date.now(), d.tracing_no);
+        db.prepare("UPDATE statement_docs SET parsed_at = ?, raw_text = ? WHERE tracing_no = ?").run(Date.now(), effectiveText, d.tracing_no);
         items += rows.length;
         parsed++;
+      } else if (effectiveText != null) {
+        // No line items parsed, but the text is still useful context — keep it.
+        db.prepare("UPDATE statement_docs SET raw_text = ? WHERE tracing_no = ?").run(effectiveText, d.tracing_no);
       }
     } catch (e) {
       console.error("parse failed for doc", d.tracing_no, (e as Error).message);

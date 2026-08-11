@@ -21,6 +21,7 @@ const COUNT_TABLES = [
   "codal_letters",
   "statement_docs",
   "fundamentals",
+  "codal_reports",
 ];
 
 /** GET /api/market — status: known instruments + row counts. */

@@ -7,7 +7,9 @@ import { analyzeTechnical } from "@/brain/technical";
 import { Calc, FundamentalInputs, PriorFundamentalInputs, TechnicalInputs, num } from "@/brain/types";
 import { getRoleAssignments } from "./db";
 import { streamComplete } from "./llm";
-import { buildSynthesisPrompt } from "./prompts";
+import { buildSynthesisPrompt, UnitSystem } from "./prompts";
+
+export type { UnitSystem } from "./prompts";
 
 const NUMERIC_FUNDAMENTAL_FIELDS = [
   "price", "sharesOutstanding", "marketCap", "netIncome", "revenue", "ebitda", "ebit",
@@ -70,10 +72,14 @@ export type AnalysisContext = {
   ticker?: string;
 };
 
-export async function streamAnalysis(input: {
-  fundamental?: string;
-  technical?: string;
-}): Promise<{ stream: ReadableStream<string>; context: AnalysisContext }> {
+export async function streamAnalysis(
+  input: {
+    fundamental?: string;
+    technical?: string;
+  },
+  opts?: { units?: UnitSystem },
+): Promise<{ stream: ReadableStream<string>; context: AnalysisContext }> {
+  const units = opts?.units ?? "usd";
   const fundamentalJson = input.fundamental?.trim() || null;
   const technicalJson = input.technical?.trim() || null;
 
@@ -90,12 +96,12 @@ export async function streamAnalysis(input: {
     const inputs = toFundamentalInputs(parsed);
     const prior = toPriorInputs(parsed?.priorYear);
     const res = analyzeFundamental(inputs, prior);
-    brainLines.push(...formatCalcs("fundamental", res.calcs, res.warnings));
+    brainLines.push(...formatCalcs("fundamental", res.calcs, res.warnings, units));
   }
   if (technicalJson) {
     const parsed = safeJson(technicalJson);
     const res = analyzeTechnical(toTechnicalInput(parsed));
-    brainLines.push(...formatCalcs("technical", res.calcs, res.warnings));
+    brainLines.push(...formatCalcs("technical", res.calcs, res.warnings, units));
     if (res.lastPrice != null) brainLines.push(`technical last close = ${res.lastPrice}`);
   }
 
@@ -111,12 +117,15 @@ export async function streamAnalysis(input: {
   const roles = getRoleAssignments();
   if (!roles.synthesis) throw new Error("No synthesis endpoint assigned — configure in Settings");
 
-  const { system, user } = buildSynthesisPrompt({
-    fundamental: fundamentalJson ?? "",
-    technical: technicalJson ?? "",
-    brain,
-    missing,
-  });
+  const { system, user } = buildSynthesisPrompt(
+    {
+      fundamental: fundamentalJson ?? "",
+      technical: technicalJson ?? "",
+      brain,
+      missing,
+    },
+    { units },
+  );
 
   const stream = await streamComplete({ system, user, endpointId: roles.synthesis });
   return {
@@ -209,13 +218,27 @@ function asNumbers(v: unknown): number[] {
   return v.filter((x) => typeof x === "number" && isFinite(x));
 }
 
+/**
+ * The brain's calc units are denominated generically ("usd"/"usd-per-share").
+ * For a synced market symbol the money is Iranian rial, so those two labels map
+ * to rial equivalents while "x"/"%"/"score"/"z"/"ratio"/"num"/"boolean" pass
+ * through unchanged (they are currency-agnostic).
+ */
+function displayUnit(u: Calc["unit"] | undefined, units: UnitSystem): string | undefined {
+  if (units !== "rial") return u;
+  if (u === "usd-per-share") return "rial-per-share";
+  if (u === "usd") return "rial";
+  return u;
+}
+
 /** Renders brain calcs as readable, unit-labeled lines for the synthesis LLM. */
-function formatCalcs(kind: string, calcs: Calc[], warnings: string[]): string[] {
+function formatCalcs(kind: string, calcs: Calc[], warnings: string[], units: UnitSystem = "usd"): string[] {
   const lines = [`${kind} calcs:`];
   for (const c of calcs) {
-    const unit = c.unit ? ` (${c.unit})` : "";
+    const unit = displayUnit(c.unit, units);
+    const unitStr = unit ? ` (${unit})` : "";
     const inputs = c.inputs.length ? `  // inputs: ${c.inputs.map((i) => `${i.name}=${i.value}`).join(", ")}` : "";
-    lines.push(`- ${c.name} = ${num(c.value, 4)}${unit}${inputs}`);
+    lines.push(`- ${c.name} = ${num(c.value, 4)}${unitStr}${inputs}`);
   }
   for (const w of warnings) lines.push(`- SKIPPED: ${w}`);
   return lines;

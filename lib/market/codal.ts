@@ -55,6 +55,8 @@ export async function searchLetters(params: {
   search?: string;
   period?: number; // reporting period in months: -1 (any) .. 12
   page?: number;
+  /** Filter by the exact Persian symbol (e.g. "فولاد") — the Symbol= API param. */
+  symbol?: string;
 }): Promise<SearchResult> {
   const q = new URLSearchParams({
     auditorRef: "-1",
@@ -74,6 +76,10 @@ export async function searchLetters(params: {
     search: params.search ? "true" : "false",
     searchText: params.search ?? "",
   });
+  // Symbol-scoped query (verified live): Symbol=<persian symbol> narrows the
+  // feed to one company, so a symbol's own letters are reachable in a few pages
+  // instead of being buried in the global publish-date feed.
+  if (params.symbol) q.set("Symbol", params.symbol);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -132,5 +138,22 @@ export async function downloadExcel(url: string): Promise<string> {
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) throw new Error(`excel download HTTP ${res.status}`);
+  return res.text();
+}
+
+/**
+ * Fetch a letter's inline body — the Codal detail page (`Url`, e.g.
+ * `/Reports/Decision.aspx?LetterSerial=...` or `/Reports/Attachment.aspx?...`).
+ * Letters without a PDF/Excel attachment (e.g. board reports) render their
+ * content here as HTML, so this recovers text that would otherwise be lost.
+ */
+export async function downloadLetterHtml(l: CodalLetter): Promise<string> {
+  const url = l.Url ?? "";
+  const abs = url.startsWith("http") ? url : `${WWW}/${url}`;
+  const res = await fetch(abs, {
+    headers: { "User-Agent": UA },
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`letter html download HTTP ${res.status}`);
   return res.text();
 }

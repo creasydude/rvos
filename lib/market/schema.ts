@@ -119,6 +119,29 @@ CREATE TABLE IF NOT EXISTS fundamentals (
   updated_at INTEGER,
   PRIMARY KEY (ins_code, fy, metric)
 );
+
+-- "Important statements" beyond the periodic financial statements: interpretive
+-- management reports, board reports, earnings forecasts, and material disclosures.
+-- Each row carries the extracted full text (raw_text) so the fundamental context
+-- loader can hand the LLM real statement content, not just computed ratios.
+CREATE TABLE IF NOT EXISTS codal_reports (
+  tracing_no INTEGER PRIMARY KEY,
+  ins_code TEXT,
+  symbol TEXT,
+  company_name TEXT,
+  title TEXT,
+  letter_code TEXT,
+  letter_type INTEGER,
+  kind TEXT,                -- 'interpretive' | 'board' | 'forecast' | 'disclosure' | 'other'
+  period_end TEXT,          -- normalized Persian date e.g. 1404/12/29 (may be null)
+  fy INTEGER,
+  sent_at TEXT,
+  published_at INTEGER,
+  pdf_path TEXT,
+  raw_text TEXT,
+  fetched_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_codal_reports_ins ON codal_reports(ins_code);
 `);
   // Migrate: add excel_url column if missing (safe to call repeatedly)
   try { db.exec("ALTER TABLE statement_docs ADD COLUMN excel_url TEXT"); } catch { /* already exists */ }

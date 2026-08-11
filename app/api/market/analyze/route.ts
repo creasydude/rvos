@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { resolveInsCode } from "@/lib/market/sync";
 import { loadTechnicalInputs, loadFundamentalInputs, latestClose } from "@/lib/market/load";
+import { loadFundamentalContext } from "@/lib/market/context";
 import { analyzeTechnical } from "@/brain/technical";
 import { analyzeFundamental } from "@/brain/fundamental";
 
@@ -31,6 +32,9 @@ export async function GET(req: NextRequest) {
     const tRes = analyzeTechnical(tInputs);
     const f = loadFundamentalInputs(insCode);
     const fRes = analyzeFundamental(f.inputs, f.prior);
+    // The deterministic statement/report context the AI write-up hands the LLM —
+    // surfaced here so the UI can show exactly what the synthesis model sees.
+    const fctx = await loadFundamentalContext(insCode);
 
     return Response.json({
       ok: true,
@@ -47,6 +51,7 @@ export async function GET(req: NextRequest) {
         populated: Object.keys(f.inputs).filter((k) => f.inputs[k as keyof typeof f.inputs] !== undefined),
         calcs: fRes.calcs.map((c) => ({ name: c.name, value: c.value, unit: c.unit ?? "num", inputs: c.inputs })),
         warnings: fRes.warnings,
+        context: fctx,
       },
     });
   } catch (e) {

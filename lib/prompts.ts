@@ -7,6 +7,9 @@ const FRAMING =
   "Your outputs are estimates based on assumptions the user can inspect. " +
   "You never perform arithmetic — all numbers you reference were computed elsewhere and are given to you.";
 
+/** Which currency the numbers in a synthesis/chat run are denominated in. */
+export type UnitSystem = "usd" | "rial";
+
 export const EXTRACT_SYSTEM = `${FRAMING}
 You reformat raw, messy, pasted financial data into a single clean JSON object.
 Use EXACTLY these keys when present (omit keys with no data). Every value is a plain number or string with its unit kept
@@ -41,12 +44,37 @@ ticker, interval, close, high, low, open, volume, notes.
 - Include a "notes" array for anything non-numeric worth keeping.
 - Output ONLY the JSON object. No markdown fences, no commentary.`;
 
-export function buildSynthesisPrompt(input: {
-  fundamental: string; // serialized fundamental notes (JSON)
-  technical: string; // serialized technical notes (JSON)
-  brain: string; // serialized brain calcs + warnings
-  missing: string[]; // which side(s) are missing
-}): { system: string; user: string } {
+/** The calc-unit reading rules, phrased for the currency the numbers are in. */
+function unitGuidance(units: UnitSystem): string {
+  const shared = `
+- "%" = a percentage (already in percent, e.g. 33.6 → "33.6%", do NOT divide by 100).
+- "x" = a multiple (e.g. 34.4 → "34.4x").
+- "z" = a z-score, "score" = an index (RSI 0-100, F-Score 0-9, ADX 0-100), "ratio" = 0-1.
+
+NEVER invent units or scale.`;
+  if (units === "rial") {
+    return `The brain output has a "unit" field on every calc. All monetary figures in this run are Iranian rial (ریال) — the listing currency of the synced stock. Read each unit before citing and format accordingly:
+- "rial-per-share" and "num" on a fundamental/intrinsic calc = rials per share (e.g. 329450 → "۳۲۹,۴۵۰ ریال per share").
+- "rial" = total rials (e.g. 2492846288301 → "۲,۴۹۲,۸۴۶,۲۸۸,۳۰۱ ریال", roughly "۲.۴۹ تریلیون ریال"). Amounts are large because rial is the base currency — do NOT rescale to USD.
+- "x" = a multiple (e.g. 34.4 → "34.4x"), "%"/"z"/"score"/"ratio" as labeled.${shared}
+If the brain says a per-share value is 329450, that is ۳۲۹,۴۵۰ ریال per share — not dollars, and not $329 billion. Never apply a USD scale or dollar sign.`;
+  }
+  return `The brain output has a "unit" field on every calc. Read it before citing a number and format accordingly:
+- "usd-per-share" and "num" on a fundamental/intrinsic calc = dollars per share (e.g. 329.45 → "$329.45").
+- "usd" = total dollars (e.g. 2492846288301 → "$2.49 trillion").${shared}
+If the brain says a per-share value is 329.45, that is $329.45 per share — not $329 billion. Do not multiply or add scale suffixes that are not in the brain output.`;
+}
+
+export function buildSynthesisPrompt(
+  input: {
+    fundamental: string; // serialized fundamental notes (JSON)
+    technical: string; // serialized technical notes (JSON)
+    brain: string; // serialized brain calcs + warnings
+    missing: string[]; // which side(s) are missing
+  },
+  opts?: { units?: UnitSystem },
+): { system: string; user: string } {
+  const units = opts?.units ?? "usd";
   const missing = input.missing.length
     ? `\nWARNING: the following data is MISSING — say so explicitly and do not guess: ${input.missing.join(", ")}.`
     : "";
@@ -63,14 +91,7 @@ Format the write-up as:
 
 Never present a single "this is the real value" number. When you cite a computed figure, say which calculation it came from (e.g. "the DCF intrinsic of $X"). If a calculation was skipped for missing inputs, note that. If this is a research aid, not a buy/sell recommendation, keep it that way: frame everything as scenarios, not calls.
 
-The brain output has a "unit" field on every calc. Read it before citing a number and format accordingly:
-- "usd-per-share" and "num" on a fundamental/intrinsic calc = dollars per share (e.g. 329.45 → "$329.45").
-- "usd" = total dollars (e.g. 2492846288301 → "$2.49 trillion").
-- "%" = a percentage (already in percent, e.g. 33.6 → "33.6%", do NOT divide by 100).
-- "x" = a multiple (e.g. 34.4 → "34.4x").
-- "z" = a z-score, "score" = an index (RSI 0-100, F-Score 0-9, ADX 0-100), "ratio" = 0-1.
-
-NEVER invent units or scale. If the brain says a per-share value is 329.45, that is $329.45 per share — not $329 billion. Do not multiply or add scale suffixes that are not in the brain output.`;
+${unitGuidance(units)}`;
 
   const user = `Fundamental notes (JSON):\n${input.fundamental || "(none)"}\n\nTechnical notes (JSON):\n${input.technical || "(none)"}\n\nBrain calculations (JSON, already computed — trust these, do not recompute):\n${input.brain}${missing}\n\nWrite the analysis.`;
   return { system, user };
@@ -92,12 +113,15 @@ Rules:
   recompute, estimate, round meaningfully, scale, or transform a number, and never multiply/divide or
   combine figures to invent a metric the brain did not already produce. The calculations were already
   done; your job is to interpret them, not redo them.
-- Read each calc's unit before citing it: "usd-per-share" is dollars per share, "usd" is total dollars,
-  "%" is already a percent, "x" is a multiple, "z"/"score"/"ratio"/"num" as labeled.
+- Read each calc's unit before citing it: "%" is already a percent, "x" is a multiple,
+  "z"/"score"/"ratio"/"num" as labeled.
 - If the user asks for a figure or type of analysis NOT present in the dataset, say clearly that it is
   not available rather than guessing, approximating, or working it out.
 - Stay in decision-support mode: present scenarios and the evidence in the dataset, not buy/sell calls.
 - Be concise, grounded, and specific, referencing the calc/section you are drawing from.`;
+
+/** Appended when the dataset was produced in Iranian rial (market write-up flow). */
+const RIAL_CHAT_NOTE = `\nNOTE: this dataset is denominated in Iranian rial (ریال), NOT US dollars. Every money magnitude in the fundamental notes and the brain output (price, market cap, revenue, per-share figures, DCF values) is rials or rials per share — cite them as such, never with a "$" and never applying a USD scale.`;
 
 export function buildChatSystem(ctx: {
   fundamental?: string;
@@ -105,7 +129,16 @@ export function buildChatSystem(ctx: {
   brain: string;
   writeup: string;
 }): string {
-  return `${CHAT_PREAMBLE}
+  let rialNote = "";
+  if (ctx.fundamental?.trim()) {
+    try {
+      const f = JSON.parse(ctx.fundamental);
+      if (f && f.unitSystem === "rial") rialNote = RIAL_CHAT_NOTE;
+    } catch {
+      /* not JSON — leave the note off */
+    }
+  }
+  return `${CHAT_PREAMBLE}${rialNote}
 
 === STOCK DATA START ===
 Fundamental notes (JSON):

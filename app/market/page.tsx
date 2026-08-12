@@ -18,6 +18,7 @@ import {
   Text,
   VStack,
 } from "@chakra-ui/react";
+import Markdown from "@/components/Markdown";
 
 type Counts = Record<string, number>;
 type Instrument = { symbol: string; insCode: string; name: string | null };
@@ -484,8 +485,8 @@ export default function MarketPage() {
                       </Link>
                     )}
                   </Flex>
-                  <Box fontSize="xs" lineHeight="1.7" whiteSpace="pre-wrap" fontFamily="body" bg="bg" p={3} borderWidth="1px" borderColor="borderC" rounded="md" maxH="420px" overflowY="auto">
-                    {writeup}
+                  <Box fontSize="xs" lineHeight="1.7" fontFamily="body" bg="bg" p={3} borderWidth="1px" borderColor="borderC" rounded="md" maxH="420px" overflowY="auto">
+                    <Markdown>{writeup}</Markdown>
                   </Box>
                 </Box>
               )}
@@ -793,9 +794,7 @@ export default function MarketPage() {
                     </Button>
                   </Flex>
                   {thesisText && (
-                    <Box whiteSpace="pre-wrap" fontSize="sm" color="ink" lineHeight="tall">
-                      {thesisText}
-                    </Box>
+                    <Markdown>{thesisText}</Markdown>
                   )}
                   {thesisId && (
                     <Flex mt={3} fontSize="xs" align="center" gap={2}>

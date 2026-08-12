@@ -77,7 +77,7 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
             <path d="M3 3v18h18" />
             <path d="M7 14l4-6 3 3 5-7" />
           </svg>
-          Sync &amp; Education Center
+          Iran Stocks Data
         </Button>
       </Box>
 

@@ -38,7 +38,7 @@ RVOS is a **three-stage analysis pipeline**:
 - **TSETMC sync** — pull OHLCV bars, price adjustments, share changes, client-type flows and quotes from `cdn.tsetmc.com`.
 - **Codal fundamentals** — find, download and parse a company's annual financial statements (PDF/Excel) into a normalized metric store — including **loss-makers**, so no symbol shows up as "technical-only" by accident.
 - **Jalali calendar awareness** — reporting periods are handled in the Persian calendar throughout.
-- **Sync & Education Center** — a dedicated UI at `/market` to sync any symbol, inspect stored rows, run the brain, and read plain-language explanations of every model.
+- **Iran Stocks Data** — a dedicated UI at `/market` to gather data for any symbol, inspect stored rows, run the brain, and read plain-language explanations of every model.
 
 ## 🧮 The brain
 
@@ -68,7 +68,7 @@ Open [http://localhost:3000](http://localhost:3000):
 
 1. Go to **Settings** (gear icon) → add an OpenAI-compatible endpoint → assign it to the three roles (**fundamental**, **technical**, **synthesis**).
 2. Paste raw data into the chat and get a structured, computed write-up back.
-3. Visit the **Sync & Education Center** at `/market` to pull real market data first.
+3. Visit the **Iran Stocks Data** at `/market` to pull real market data first.
 
 ## 📡 Market data API
 
@@ -100,7 +100,7 @@ curl "http://localhost:3000/api/market/analyze?symbol=%D9%81%D9%88%D9%84%D8%A7%D
 | `lib/market/` | Data engine — TSETMC/Codal clients, sync ETL, statement parser, Jalali calendar |
 | `lib/` | LLM adapter (OpenAI-compatible + SSE), prompts, analyze orchestration, SQLite |
 | `app/api/` | REST endpoints — chat, analyze, roles, endpoints, market sync |
-| `app/market/` | Sync & Education Center UI |
+| `app/market/` | Iran Stocks Data UI |
 | `app/settings/` | Endpoint + role assignment UI |
 | `scripts/` | Dev harnesses — mock LLM server, E2E smoke tests, sync verifier |
 

@@ -67,12 +67,28 @@ export default function MarketPage() {
   const [writeupId, setWriteupId] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
     const r = await fetch("/api/market").then((r) => r.json()).catch(() => null);
     if (r && typeof r === "object") setStatus(r as Status);
   }, []);
+
+  const deleteAll = useCallback(async () => {
+    try {
+      const r = await fetch("/api/market", { method: "DELETE" }).then((r) => r.json()).catch(() => null);
+      if (r?.ok) {
+        push("ok", "✔ All market data deleted");
+        setDeleteConfirm(false);
+        await refresh();
+      } else {
+        push("err", `✖ Delete failed: ${r?.error ?? "unknown"}`);
+      }
+    } catch (e) {
+      push("err", `✖ Delete threw: ${(e as Error).message}`);
+    }
+  }, [refresh]);
 
   useEffect(() => {
     refresh().catch(() => {});
@@ -177,7 +193,7 @@ export default function MarketPage() {
               (r.reports != null ? ` · ${r.reports} important reports` : "")
             : `✖ ${payload.symbol}: ${r.reason}`);
       } else {
-        push("ok", `✔ EOD sync: ${data.succeeded}/${data.total} instruments synced`);
+        push("ok", `✔ EOD gather: ${data.succeeded}/${data.total} instruments gathered`);
         for (const r of (data.results ?? []) as SyncResult[]) {
           if (!r.ok) push("err", `  ✖ ${r.symbol ?? r.insCode}: ${r.reason}`);
         }
@@ -194,7 +210,7 @@ export default function MarketPage() {
       <Box maxW="1080px" mx="auto" px={{ base: 3, md: 5 }} py={8} color="ink">
       <Flex mb={6} align="center" justify="space-between" wrap="wrap" gap={3}>
         <Box>
-          <Heading size="lg">Sync &amp; Education Center</Heading>
+          <Heading size="lg">Iran Stocks Data</Heading>
           <Text mt={1} fontSize="sm" color="muted">
             Pull Tehran market data into RVOS and learn how the brain turns it into numbers.
           </Text>
@@ -206,7 +222,7 @@ export default function MarketPage() {
 
       <TabsRoot defaultValue="sync" size="lg">
         <TabsList mb={4}>
-          <TabsTrigger value="sync">Sync</TabsTrigger>
+          <TabsTrigger value="sync">Gather Data</TabsTrigger>
           <TabsTrigger value="education">Education</TabsTrigger>
         </TabsList>
 
@@ -215,13 +231,13 @@ export default function MarketPage() {
           <VStack align="stretch" spaceY={6}>
             {/* Actions */}
             <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
-              <Heading size="sm" mb={3}>Sync actions</Heading>
+              <Heading size="sm" mb={3}>Gather data</Heading>
               <Flex gap={2} wrap="wrap" align="center">
                 <Input
                   placeholder="Symbol or insCode (e.g. فولاد)"
                   value={symbol}
                   onChange={(e) => setSymbol(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && symbol.trim() && runSync({ action: "sync", symbol: symbol.trim() }, `sync ${symbol.trim()}`)}
+                  onKeyDown={(e) => e.key === "Enter" && symbol.trim() && runSync({ action: "sync", symbol: symbol.trim() }, `gather ${symbol.trim()}`)}
                   bg="bg"
                   borderColor="borderC"
                   maxW="260px"
@@ -230,27 +246,27 @@ export default function MarketPage() {
                   colorScheme="accent"
                   size="sm"
                   disabled={!symbol.trim() || !!busy}
-                  onClick={() => symbol.trim() && runSync({ action: "sync", symbol: symbol.trim() }, `sync ${symbol.trim()}`)}
+                  onClick={() => symbol.trim() && runSync({ action: "sync", symbol: symbol.trim() }, `gather ${symbol.trim()}`)}
                 >
-                  Sync symbol
+                  Gather data
                 </Button>
                 <Button
                   variant="outline"
                   borderColor="borderC"
                   size="sm"
                   disabled={!!busy}
-                  onClick={() => runSync({ action: "sync" }, "sync all instruments")}
+                  onClick={() => runSync({ action: "sync" }, "gather all instruments")}
                 >
-                  Sync all instruments
+                  Gather all data
                 </Button>
                 <Button
                   variant="outline"
                   borderColor="borderC"
                   size="sm"
                   disabled={!!busy}
-                  onClick={() => runSync({ action: "syncCodal", days: 30, limit: 40, download: true }, "sync recent Codal filings")}
+                  onClick={() => runSync({ action: "syncCodal", days: 30, limit: 40, download: true }, "gather recent Codal filings")}
                 >
-                  Sync recent Codal filings
+                  Gather recent Codal filings
                 </Button>
                 {busy && (
                   <Flex align="center" gap={2} fontSize="sm" color="muted">
@@ -265,9 +281,26 @@ export default function MarketPage() {
               <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
                 <Flex align="center" justify="space-between" mb={3}>
                   <Heading size="sm">Database status</Heading>
-                  <Button size="xs" variant="ghost" color="muted" onClick={() => refresh()}>
-                    Refresh
-                  </Button>
+                  <Flex gap={1}>
+                    <Button size="xs" variant="ghost" color="muted" onClick={() => refresh()}>
+                      Refresh
+                    </Button>
+                    {!deleteConfirm ? (
+                      <Button size="xs" variant="ghost" color="red.300" onClick={() => setDeleteConfirm(true)}>
+                        Delete all data
+                      </Button>
+                    ) : (
+                      <Flex gap={1} align="center">
+                        <Text fontSize="xs" color="red.300">Are you sure?</Text>
+                        <Button size="xs" variant="solid" colorPalette="red" onClick={() => deleteAll()}>
+                          Confirm
+                        </Button>
+                        <Button size="xs" variant="ghost" color="muted" onClick={() => setDeleteConfirm(false)}>
+                          Cancel
+                        </Button>
+                      </Flex>
+                    )}
+                  </Flex>
                 </Flex>
                 <Flex wrap="wrap" gap={2} mb={4}>
                   {COUNT_LABELS.map(([key, label]) => {
@@ -287,7 +320,7 @@ export default function MarketPage() {
 
                 <Heading size="xs" color="muted" mb={2}>Known instruments ({status.instruments.length})</Heading>
                 {status.instruments.length === 0 && (
-                  <Text fontSize="sm" color="muted">No instruments yet — sync one by symbol to start.</Text>
+                  <Text fontSize="sm" color="muted">No instruments yet — gather data for a symbol to start.</Text>
                 )}
                 <Flex direction="column" gap={1}>
                   {status.instruments.slice(0, 200).map((inst) => (
@@ -302,15 +335,15 @@ export default function MarketPage() {
 
             {/* Analyze */}
             <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
-              <Heading size="sm" mb={1}>Analyze a synced symbol</Heading>
+              <Heading size="sm" mb={1}>Analyze a symbol</Heading>
               <Text fontSize="xs" color="muted" mb={3}>
                 Loads the stored bars + any parsed fundamentals for a symbol and runs the brain on them
-                (technical: RSI/MACD/ADX/SMA… — available after any sync; fundamental: needs a parsed
+                (technical: RSI/MACD/ADX/SMA… — available after gathering data; fundamental: needs a parsed
                 statement PDF in <code>fundamentals</code>).
               </Text>
               <Flex gap={2} wrap="wrap" align="center">
                 <Input
-                  placeholder="Symbol already synced (e.g. فولاد)"
+                  placeholder="Symbol already gathered (e.g. فولاد)"
                   value={analyzeSymbol}
                   onChange={(e) => setAnalyzeSymbol(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && analyzeSymbol.trim() && runAnalyze(analyzeSymbol.trim())}
@@ -340,7 +373,7 @@ export default function MarketPage() {
               {writeup && (
                 <Box mt={4}>
                   <Flex align="center" justify="space-between" mb={1}>
-                    <Text fontSize="xs" color="muted">AI write-up (synced data + statement context → synthesis LLM)</Text>
+                    <Text fontSize="xs" color="muted">AI write-up (gathered data + statement context → synthesis LLM)</Text>
                     {writeupId && (
                       <Link href={`/?id=${writeupId}`} style={{ color: "#e8e8ec", textDecoration: "none", fontSize: "12px" }}>
                         Open in chat ↗
@@ -420,7 +453,7 @@ export default function MarketPage() {
             <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
               <Heading size="sm" mb={3}>Activity log</Heading>
               <Box ref={logRef} maxH="260px" overflowY="auto" fontSize="xs" fontFamily="mono" lineHeight="1.7">
-                {log.length === 0 && <Text color="muted">Nothing yet — run a sync to populate this.</Text>}
+                {log.length === 0 && <Text color="muted">Nothing yet — gather data to populate this.</Text>}
                 {log.map((e) => (
                   <Text key={e.id} color={e.kind === "err" ? "red.300" : e.kind === "ok" ? "green.300" : "muted"}>
                     {e.text}
@@ -546,9 +579,9 @@ export default function MarketPage() {
             </Box>
 
             <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
-              <Heading size="sm" mb={2}>What happens after sync</Heading>
+              <Heading size="sm" mb={2}>What happens after gathering data</Heading>
               <Text fontSize="sm" color="muted">
-                Synced instruments become available to the chat pipeline: paste fundamental notes into a
+                Gathered instruments become available to the chat pipeline: paste fundamental notes into a
                 new analysis and the brain (plus the configured LLM roles) will reason over the same
                 precomputed numbers shown here. Every number remains traceable to a stored input.
               </Text>
@@ -626,7 +659,7 @@ function serializeContext(context: FContext): string {
       parts.push("Key points:");
       for (const kp of context.statement.keyPoints) parts.push(`- ${kp}`);
     }
-    parts.push(context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)");
+    parts.push(context.statement.excerpt || "(no narrative text stored — gather data to re-download the PDF)");
   }
 
   for (const r of context.reports) {
@@ -703,7 +736,7 @@ function FundamentalContext({ context }: { context: FContext | null }) {
               </>
             ) : null}
             <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
-              {context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)"}
+              {context.statement.excerpt || "(no narrative text stored — gather data to re-download the PDF)"}
             </Text>
           </Box>
         </details>

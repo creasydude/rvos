@@ -40,6 +40,21 @@ export async function GET() {
 }
 
 /**
+ * DELETE /api/market — wipe all market data tables (instruments, bars, filings…).
+ * Keeps the DB file itself; only truncates rows.
+ */
+export async function DELETE() {
+  try {
+    for (const t of COUNT_TABLES) {
+      db.prepare(`DELETE FROM ${t}`).run();
+    }
+    return Response.json({ ok: true });
+  } catch (e) {
+    return Response.json({ ok: false, error: (e as Error).message }, { status: 500 });
+  }
+}
+
+/**
  * POST /api/market
  *   { action: "sync" }                  → EOD sync for every known instrument
  *   { action: "sync", symbol: "فولاد" } → sync one symbol/code

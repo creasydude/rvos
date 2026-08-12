@@ -11,7 +11,7 @@ export type Input = {
 export type Calc = {
   name: string;
   value: number;
-  unit?: "x" | "%" | "usd" | "usd-per-share" | "score" | "z" | "num" | "ratio" | "boolean";
+  unit?: "x" | "%" | "usd" | "usd-per-share" | "rial" | "rial-per-share" | "score" | "z" | "num" | "ratio" | "boolean";
   formula: string;
   inputs: Input[];
 };
@@ -85,9 +85,13 @@ export type PriorFundamentalInputs = {
   sharesOutstanding?: number;
 };
 
+/** Currency denomination the brain should label monetary calcs in. */
+export type CurrencyLabel = "usd" | "rial";
+
 export type BrainResult = {
   fundamental?: FundamentalResult;
   technical?: TechnicalResult;
+  scenarios?: import("./scenario-types").ScenarioOutput;
 };
 
 export type FundamentalResult = {

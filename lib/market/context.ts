@@ -113,7 +113,7 @@ const BOILERPLATE_RE = /بند\s*(مقدمه|مسئولیت|دامنه|تاکی�
  * Long sentences survive only when they carry a money word; everything else is
  * boilerplate-shaped and skipped.
  */
-export function digestFromText(text: string | null | undefined, maxLines = 12, maxLen = 96): string[] {
+export function digestFromText(text: string | null | undefined, maxLines = 30, maxLen = 160): string[] {
   if (!text) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -122,7 +122,7 @@ export function digestFromText(text: string | null | undefined, maxLines = 12, m
     if (line.length < 10) continue;
     if (!KEYPOINT_SIGNAL_RE.test(line)) continue;
     if (BOILERPLATE_RE.test(line)) continue;
-    if (line.length > 220 && !MONEY_WORD_RE.test(line)) continue;
+    if (line.length > 400 && !MONEY_WORD_RE.test(line)) continue;
     if (seen.has(line)) continue;
     seen.add(line);
     out.push(line.length > maxLen ? `${line.slice(0, maxLen)}…` : line);
@@ -171,7 +171,7 @@ export function renderNarrative(ctx: FundamentalContext): string {
     }
     // Huge statements (the audit report is ~85k chars of ISA boilerplate) add
     // only the key points; moderate ones get their verbatim head+tail excerpt.
-    if (ctx.statement.rawLength <= 12000 && ctx.statement.excerpt) {
+    if (ctx.statement.rawLength <= 25000 && ctx.statement.excerpt) {
       parts.push("Excerpt (verbatim):");
       parts.push(ctx.statement.excerpt);
     }
@@ -272,19 +272,19 @@ export async function loadFundamentalContext(insCode: string): Promise<Fundament
       ? {
           title: typeof doc.title === "string" ? doc.title : "",
           periodEnd: typeof doc.period_end === "string" ? doc.period_end : null,
-          excerpt: clipExcerpt(stmtRaw, 2000, 1200),
+          excerpt: clipExcerpt(stmtRaw, 4000, 2000),
           rawLength: stmtRaw.length,
           keyPoints: digestFromText(stmtRaw),
         }
       : null,
-    // Disclosure letters are short (~1-4k chars) and are literally the "key
-    // points" — keep their full text (generous cap) rather than truncating.
+    // Disclosure letters are short (~1-4k chars) and carry the real decision
+    // substance — keep nearly all of their text rather than truncating.
     reports: reportRows.map((r) => ({
       kind: r.kind,
       title: typeof r.title === "string" ? r.title : "",
       published: epochDate(r.published_at),
-      excerpt: clipExcerpt(r.raw_text, 2500, 1200),
-      keyPoints: digestFromText(r.raw_text, 10, 96),
+      excerpt: clipExcerpt(r.raw_text, 6000, 3000),
+      keyPoints: digestFromText(r.raw_text, 20, 160),
     })),
     units: "rial",
   };

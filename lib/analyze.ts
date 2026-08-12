@@ -98,7 +98,7 @@ export async function streamAnalysis(
     const parsed = safeJson(fundamentalJson);
     const inputs = toFundamentalInputs(parsed);
     const prior = toPriorInputs(parsed?.priorYear);
-    const res = analyzeFundamental(inputs, prior);
+    const res = analyzeFundamental(inputs, prior, units);
     brainLines.push(...formatCalcs("fundamental", res.calcs, res.warnings, units));
   }
   if (technicalJson) {
@@ -224,15 +224,11 @@ function asNumbers(v: unknown): number[] {
 }
 
 /**
- * The brain's calc units are denominated generically ("usd"/"usd-per-share").
- * For a synced market symbol the money is Iranian rial, so those two labels map
- * to rial equivalents while "x"/"%"/"score"/"z"/"ratio"/"num"/"boolean" pass
- * through unchanged (they are currency-agnostic).
+ * Pass-through: the brain now sets the correct currency label when given a
+ * `currency` param, so no remapping is needed at render time. Kept as a
+ * function (rather than inlining `c.unit`) for readability in `formatCalcs`.
  */
-function displayUnit(u: Calc["unit"] | undefined, units: UnitSystem): string | undefined {
-  if (units !== "rial") return u;
-  if (u === "usd-per-share") return "rial-per-share";
-  if (u === "usd") return "rial";
+function displayUnit(u: Calc["unit"] | undefined): string | undefined {
   return u;
 }
 
@@ -240,7 +236,7 @@ function displayUnit(u: Calc["unit"] | undefined, units: UnitSystem): string | u
 function formatCalcs(kind: string, calcs: Calc[], warnings: string[], units: UnitSystem = "usd"): string[] {
   const lines = [`${kind} calcs:`];
   for (const c of calcs) {
-    const unit = displayUnit(c.unit, units);
+    const unit = displayUnit(c.unit);
     const unitStr = unit ? ` (${unit})` : "";
     const inputs = c.inputs.length ? `  // inputs: ${c.inputs.map((i) => `${i.name}=${i.value}`).join(", ")}` : "";
     lines.push(`- ${c.name} = ${num(c.value, 4)}${unitStr}${inputs}`);

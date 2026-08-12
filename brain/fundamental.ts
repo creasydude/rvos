@@ -1,7 +1,7 @@
 // Pure, unit-testable fundamental valuation math. No LLM, no IO.
 // Every Calc carries its inputs so the caller can trace numbers to sources.
 
-import { Calc, FundamentalInputs, FundamentalResult, Input, num, PriorFundamentalInputs } from "./types";
+import { Calc, CurrencyLabel, FundamentalInputs, FundamentalResult, Input, num, PriorFundamentalInputs } from "./types";
 
 function i(name: string, value: number | string | undefined | null, source: Input["source"] = "fundamental"): Input | null {
   if (value === undefined || value === null) return null;
@@ -14,9 +14,12 @@ function calc(name: string, value: number, formula: string, inputs: (Input | nul
   return { name, value, unit, formula, inputs: inputs.filter((x): x is Input => x !== null) };
 }
 
-export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamentalInputs): FundamentalResult {
+export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamentalInputs, currency: CurrencyLabel = "usd"): FundamentalResult {
   const calcs: Calc[] = [];
   const warnings: string[] = [];
+
+  const moneyUnit = currency === "rial" ? "rial" : "usd";
+  const perShareUnit = currency === "rial" ? "rial-per-share" : "usd-per-share";
 
   const marketCap = inp.marketCap ?? (inp.price && inp.sharesOutstanding ? inp.price * inp.sharesOutstanding : undefined);
 
@@ -82,9 +85,9 @@ export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamen
   } else warnings.push("P/S skipped: need price and sales per share");
 
   // ---- Graham number & margin of safety -----------------------------------
-  if (inp.eps && inp.bookValuePerShare) {
+  if (inp.eps != null && inp.eps > 0 && inp.bookValuePerShare != null && inp.bookValuePerShare > 0) {
     const graham = Math.sqrt(22.5 * inp.eps * inp.bookValuePerShare);
-    calcs.push(calc("Graham Number", graham, "sqrt(22.5 * eps * bvps)", [i("eps", inp.eps), i("BVPS", inp.bookValuePerShare)], "usd-per-share"));
+    calcs.push(calc("Graham Number", graham, "sqrt(22.5 * eps * bvps)", [i("eps", inp.eps), i("BVPS", inp.bookValuePerShare)], perShareUnit));
     if (inp.price) {
       calcs.push(calc(
         "Graham margin of safety",
@@ -93,7 +96,7 @@ export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamen
         [i("Graham Number", graham), i("price", inp.price)],
       ));
     }
-  } else warnings.push("Graham Number skipped: need EPS and book value per share");
+  } else warnings.push("Graham Number skipped: need positive EPS and book value per share");
 
   // ---- Dividend Discount Model (Gordon Growth) ---------------------------
   if (inp.dividendsPerShare && inp.discountRate && inp.dividendGrowthRate != null) {
@@ -104,7 +107,7 @@ export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamen
         i("dividend/share", inp.dividendsPerShare),
         i("growth g", g),
         i("discount r", r),
-      ], "usd-per-share"));
+      ], perShareUnit));
       if (inp.price) {
         calcs.push(calc(
           "DDM margin of safety",
@@ -140,11 +143,11 @@ export function analyzeFundamental(inp: FundamentalInputs, prior?: PriorFundamen
           i("discount r", r),
           i("terminal growth g", g),
           i("FCF projection", JSON.stringify(projections.slice(0, 3))),
-        ], "usd"));
+        ], moneyUnit));
         if (perShare != null) {
           calcs.push(calc("DCF intrinsic per share", perShare, "(ev - net_debt) / shares", [
             i("EV", ev), i("net debt", netDebt), i("shares", inp.sharesOutstanding),
-          ], "usd-per-share"));
+          ], perShareUnit));
           if (inp.price) {
             calcs.push(calc(
               "DCF margin of safety",

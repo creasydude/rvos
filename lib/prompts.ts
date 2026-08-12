@@ -72,6 +72,7 @@ export function buildSynthesisPrompt(
     narrative?: string; // readable statement/disclosure excerpts to mine (market write-up)
     brain: string; // serialized brain calcs + warnings
     missing: string[]; // which side(s) are missing
+    scenarios?: string; // serialized scenario output (JSON), if available
   },
   opts?: { units?: UnitSystem },
 ): { system: string; user: string } {
@@ -80,10 +81,20 @@ export function buildSynthesisPrompt(
     ? `\nWARNING: the following data is MISSING — say so explicitly and do not guess: ${input.missing.join(", ")}.`
     : "";
   const narrativeDirective = input.narrative
-    ? `\nThe user message includes a "Statement & disclosures" section — verbatim excerpts from the company's own filings (line items, the periodic financial statement, and important disclosure letters). Use it as primary evidence: cite the specific facts it contains — amounts, appraised prices, transaction values, dates, what management, the auditor, or a disclosure actually said — to support each part of the write-up. Extract the decision-relevant substance; never recite boilerplate and never invent facts beyond what is written there.`
+    ? `\nThe user message includes a "Statement & disclosures" section — verbatim excerpts from the company's own filings (line items, the periodic financial statement, and important disclosure letters). This is PRIMARY EVIDENCE — mine it aggressively. For every section of the write-up, cite specific facts from it: exact amounts (ریال), dates, transaction details, auditor opinions, management claims, tender results, related-party transactions, asset appraisals. The statement and disclosure letters are where the real substance lives — the brain gives you ratios, but the filings tell you what the company actually did. Extract the decision-relevant substance; never recite boilerplate and never invent facts beyond what is written there.`
+    : "";
+  const scenarioDirective = input.scenarios
+    ? `\nScenario analysis is available in the user message. When presenting scenarios:
+- Compare the4 scenarios directly: persistent-sanctions, partial-normalization, full-normalization, severe-deterioration.
+- For each scenario, state its name, description, and intrinsic value per share from the DCF.
+- Highlight what changes between scenarios (e.g. margins, revenue growth, discount rate) and what stays constant (e.g. base financials).
+- Reference the sensitivity tables to explain how robust the conclusions are.
+- If probability-weighted expected value is provided, state it clearly.
+- Never recompute any scenario number — all values are pre-computed in the scenario output.
+- Never assign or invent probabilities — only use probability-weighted values when they are explicitly supplied.`
     : "";
   const system = `${FRAMING}
-You write the final research write-up. All math was already done for you — every number you cite must come from the supplied brain output. Do not compute or transform any number yourself; just interpret.${narrativeDirective}
+You write the final research write-up. All math was already done for you — every number you cite must come from the supplied brain output. Do not compute or transform any number yourself; just interpret.${narrativeDirective}${scenarioDirective}
 
 Format the write-up as:
 1. "TL;DR" — 2-3 sentences.
@@ -100,7 +111,10 @@ ${unitGuidance(units)}`;
   const narrative = input.narrative
     ? `\n\nStatement & disclosures (verbatim excerpts from the company's filings — USE these):\n${input.narrative}`
     : "";
-  const user = `Fundamental notes (JSON):\n${input.fundamental || "(none)"}${narrative}\n\nTechnical notes (JSON):\n${input.technical || "(none)"}\n\nBrain calculations (JSON, already computed — trust these, do not recompute):\n${input.brain}${missing}\n\nWrite the analysis.`;
+  const scenarioBlock = input.scenarios
+    ? `\n\nScenario analysis (JSON, pre-computed — cite these values as-is, do not recompute):\n${input.scenarios}`
+    : "";
+  const user = `Fundamental notes (JSON):\n${input.fundamental || "(none)"}${narrative}\n\nTechnical notes (JSON):\n${input.technical || "(none)"}\n\nBrain calculations (JSON, already computed — trust these, do not recompute):\n${input.brain}${scenarioBlock}${missing}\n\nWrite the analysis.`;
   return { system, user };
 }
 
@@ -125,7 +139,12 @@ Rules:
 - If the user asks for a figure or type of analysis NOT present in the dataset, say clearly that it is
   not available rather than guessing, approximating, or working it out.
 - Stay in decision-support mode: present scenarios and the evidence in the dataset, not buy/sell calls.
-- Be concise, grounded, and specific, referencing the calc/section you are drawing from.`;
+- Be concise, grounded, and specific, referencing the calc/section you are drawing from.
+- The dataset may include scenario analysis results (persistent-sanctions, partial-normalization,
+  full-normalization, severe-deterioration). You may explain scenario differences, restate assumptions,
+  or discuss sensitivity — but you must never re-run, re-weight, or recompute any scenario number.
+- Never assign or invent probabilities for scenarios. Only use probability-weighted expected value
+  when it is explicitly present in the dataset.`;
 
 /** Appended when the dataset was produced in Iranian rial (market write-up flow). */
 const RIAL_CHAT_NOTE = `\nNOTE: this dataset is denominated in Iranian rial (ریال), NOT US dollars. Every money magnitude in the fundamental notes and the brain output (price, market cap, revenue, per-share figures, DCF values) is rials or rials per share — cite them as such, never with a "$" and never applying a USD scale.`;
@@ -136,6 +155,7 @@ export function buildChatSystem(ctx: {
   narrative?: string;
   brain: string;
   writeup: string;
+  scenarios?: string; // serialized scenario output (JSON)
 }): string {
   let rialNote = "";
   if (ctx.fundamental?.trim()) {
@@ -151,7 +171,10 @@ export function buildChatSystem(ctx: {
     }
   }
   const narrativeBlock = ctx.narrative
-    ? `\nStatement & disclosures (verbatim excerpts from the company's filings — USE these when relevant):\n${ctx.narrative}`
+    ? `\nStatement & disclosures (verbatim excerpts from the company's filings — PRIMARY EVIDENCE, mine aggressively):\n${ctx.narrative}`
+    : "";
+  const scenarioBlock = ctx.scenarios
+    ? `\n\nScenario analysis (JSON, pre-computed — cite these values as-is, do not recompute):\n${ctx.scenarios}`
     : "";
   return `${CHAT_PREAMBLE}${rialNote}
 
@@ -163,7 +186,7 @@ Technical notes (JSON):
 ${ctx.technical || "(none)"}
 
 Brain calculations (JSON, already computed — cite these as-is, do not recompute):
-${ctx.brain || "(none)"}
+${ctx.brain || "(none)"}${scenarioBlock}
 
 Latest analysis write-up:
 ${ctx.writeup || "(none)"}

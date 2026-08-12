@@ -40,6 +40,56 @@ type SyncResult = {
 
 type LogEntry = { id: number; kind: "ok" | "err" | "info"; text: string };
 
+type ScenarioResult = {
+  scenarioId: string;
+  scenarioName: string;
+  description: string;
+  dcf: {
+    intrinsicValuePerShare?: number;
+    enterpriseValue?: number;
+    equityValue?: number;
+    pvCashFlows?: number;
+    warnings: string[];
+  };
+  bridge: {
+    revenue?: { name: string; baseValue?: number; scenarioValue?: number; delta?: number; unit?: string }[];
+    ebitda?: { name: string; baseValue?: number; scenarioValue?: number; delta?: number; unit?: string }[];
+    fcf?: { name: string; baseValue?: number; scenarioValue?: number; delta?: number; unit?: string }[];
+  };
+  sensitivity: {
+    discountRate: { discountRate?: number; intrinsicValuePerShare?: number }[];
+    terminalGrowth: { terminalGrowth?: number; intrinsicValuePerShare?: number }[];
+    exitMultiple: { exitMultiple?: number; intrinsicValuePerShare?: number }[];
+  };
+  assumptions: {
+    macro: { key: string; value: number; unit: string; description?: string }[];
+    company: { key: string; value: number; unit: string; description?: string }[];
+  };
+  probability?: number;
+  probabilityWeightedValue?: number;
+  warnings: string[];
+};
+
+type ScenarioOutput = {
+  symbol?: string;
+  name?: string;
+  baseCase: {
+    revenue: number;
+    ebitda?: number;
+    ebitdaMargin?: number;
+    fcf?: number;
+    price?: number;
+  };
+  baseValuation?: {
+    dcfPerShare?: number;
+    price?: number;
+    marginOfSafety?: number;
+  };
+  results: ScenarioResult[];
+  expectedValue?: number;
+  warnings: string[];
+};
+
 const COUNT_LABELS: [string, string][] = [
   ["instruments", "Instruments"],
   ["daily_bars", "Daily bars"],
@@ -68,6 +118,9 @@ export default function MarketPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [scenarioSymbol, setScenarioSymbol] = useState("");
+  const [scenarioOutput, setScenarioOutput] = useState<ScenarioOutput | null>(null);
+  const [scenarioBusy, setScenarioBusy] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -116,7 +169,7 @@ export default function MarketPage() {
 
   // Calcs → clipboard text: one `name = value [unit]` line per calc.
   const calcsText = (cs: { name: string; value: number; unit?: string }[] | undefined) =>
-    (cs ?? []).map((c) => `${c.name} = ${c.value.toFixed(3)}${c.unit ? ` ${c.unit}` : ""}`).join("\n");
+    (cs ?? []).map((c) => `${c.name} = ${c.value != null ? c.value.toFixed(3) : "N/A"}${c.unit ? ` ${c.unit}` : ""}`).join("\n");
 
   const runAnalyze = async (sym: string) => {
     if (analysing) return;
@@ -166,6 +219,26 @@ export default function MarketPage() {
       push("err", `✖ AI write-up ${sym} threw: ${(e as Error).message}`);
     }
     setWriteupBusy(false);
+  };
+
+  const runScenarios = async (sym: string) => {
+    if (scenarioBusy) return;
+    setScenarioBusy(true);
+    setScenarioOutput(null);
+    push("info", `▶ scenarios ${sym} …`);
+    try {
+      const res = await fetch(`/api/market/scenarios?symbol=${encodeURIComponent(sym)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) push("err", `✖ scenarios ${sym}: ${data.error ?? res.status}`);
+      else {
+        setScenarioOutput(data.output);
+        const n = data.output?.results?.length ?? 0;
+        push("ok", `✔ scenarios ${sym}: ${n} scenarios computed`);
+      }
+    } catch (e) {
+      push("err", `✖ scenarios ${sym} threw: ${(e as Error).message}`);
+    }
+    setScenarioBusy(false);
   };
 
   const runSync = async (payload: Record<string, unknown>, label: string) => {
@@ -223,6 +296,7 @@ export default function MarketPage() {
       <TabsRoot defaultValue="sync" size="lg">
         <TabsList mb={4}>
           <TabsTrigger value="sync">Gather Data</TabsTrigger>
+          <TabsTrigger value="scenarios">Scenarios</TabsTrigger>
           <TabsTrigger value="education">Education</TabsTrigger>
         </TabsList>
 
@@ -407,7 +481,7 @@ export default function MarketPage() {
                         </Button>
                       </Flex>
                       {(analysis.technical as { calcs: { name: string; value: number; unit?: string }[] }).calcs.map((c) => (
-                        <Text key={c.name}>{c.name} = {c.value.toFixed(3)}</Text>
+                        <Text key={c.name}>{c.name} = {c.value != null ? c.value.toFixed(3) : "N/A"}</Text>
                       ))}
                     </Box>
                   ) : null}
@@ -426,7 +500,7 @@ export default function MarketPage() {
                         </Button>
                       </Flex>
                       {(analysis.fundamental as { calcs: { name: string; value: number; unit?: string }[] }).calcs.map((c) => (
-                        <Text key={c.name}>{c.name} = {c.value.toFixed(3)}</Text>
+                        <Text key={c.name}>{c.name} = {c.value != null ? c.value.toFixed(3) : "N/A"}</Text>
                       ))}
                     </Box>
                   ) : null}
@@ -461,6 +535,219 @@ export default function MarketPage() {
                 ))}
               </Box>
             </Box>
+          </VStack>
+        </TabsContent>
+
+        {/* ---------------- SCENARIOS ---------------- */}
+        <TabsContent value="scenarios">
+          <VStack align="stretch" spaceY={6}>
+            <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
+              <Heading size="sm" mb={1}>Macro Regime Scenario Analysis</Heading>
+              <Text fontSize="xs" color="muted" mb={3}>
+                Run 4 preset macro scenarios (persistent sanctions, partial normalization, full normalization,
+                severe deterioration) on a symbol&apos;s synced fundamental data. Each scenario projects
+                financials over 5 years and computes DCF valuations, sensitivity tables, and an operating bridge.
+              </Text>
+              <Flex gap={2} wrap="wrap" align="center">
+                <Input
+                  placeholder="Symbol already gathered (e.g. فولاد)"
+                  value={scenarioSymbol}
+                  onChange={(e) => setScenarioSymbol(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && scenarioSymbol.trim() && runScenarios(scenarioSymbol.trim())}
+                  bg="bg"
+                  borderColor="borderC"
+                  maxW="260px"
+                />
+                <Button
+                  colorScheme="accent"
+                  size="sm"
+                  disabled={!scenarioSymbol.trim() || scenarioBusy}
+                  onClick={() => scenarioSymbol.trim() && runScenarios(scenarioSymbol.trim())}
+                >
+                  {scenarioBusy ? "Running…" : "Run scenarios"}
+                </Button>
+              </Flex>
+            </Box>
+
+            {scenarioOutput && (
+              <>
+                {/* Base case summary */}
+                <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
+                  <Heading size="sm" mb={2}>Base case</Heading>
+                  <Flex wrap="wrap" gap={3}>
+                    <Stat label="Revenue" value={fmtRial(scenarioOutput.baseCase.revenue)} />
+                    {scenarioOutput.baseCase.ebitda != null && <Stat label="EBITDA" value={fmtRial(scenarioOutput.baseCase.ebitda)} />}
+                    {scenarioOutput.baseCase.ebitdaMargin != null && <Stat label="EBITDA margin" value={`${(scenarioOutput.baseCase.ebitdaMargin * 100).toFixed(1)}%`} />}
+                    {scenarioOutput.baseCase.fcf != null && <Stat label="FCF" value={fmtRial(scenarioOutput.baseCase.fcf)} />}
+                    {scenarioOutput.baseValuation?.dcfPerShare != null && <Stat label="DCF intrinsic" value={fmtRial(scenarioOutput.baseValuation.dcfPerShare)} />}
+                    {scenarioOutput.expectedValue != null && <Stat label="Expected value" value={fmtRial(scenarioOutput.expectedValue)} />}
+                  </Flex>
+                </Box>
+
+                {/* Scenario comparison table */}
+                <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
+                  <Heading size="sm" mb={3}>Scenario comparison</Heading>
+                  <Box overflowX="auto">
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid var(--chakra-colors-borderC)" }}>
+                          <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--chakra-colors-muted)" }}>Scenario</th>
+                          <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--chakra-colors-muted)" }}>DCF /share</th>
+                          <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--chakra-colors-muted)" }}>Discount rate</th>
+                          <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--chakra-colors-muted)" }}>Terminal growth</th>
+                          <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--chakra-colors-muted)" }}>Warnings</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scenarioOutput.results.map((r) => {
+                          const macro = Object.fromEntries(r.assumptions.macro.map((a) => [a.key, a.value]));
+                          return (
+                            <tr key={r.scenarioId} style={{ borderBottom: "1px solid var(--chakra-colors-borderC)" }}>
+                              <td style={{ padding: "6px 8px" }}>
+                                <Text fontWeight="semibold" fontSize="xs">{r.scenarioName}</Text>
+                                <Text fontSize="10px" color="muted">{r.description}</Text>
+                              </td>
+                              <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "mono" }}>
+                                {r.dcf.intrinsicValuePerShare != null ? fmtRial(r.dcf.intrinsicValuePerShare) : "—"}
+                              </td>
+                              <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "mono" }}>
+                                {macro.discountRate != null ? `${(macro.discountRate * 100).toFixed(1)}%` : "—"}
+                              </td>
+                              <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "mono" }}>
+                                {macro.terminalGrowthRate != null ? `${(macro.terminalGrowthRate * 100).toFixed(1)}%` : "—"}
+                              </td>
+                              <td style={{ textAlign: "right", padding: "6px 8px", fontSize: "10px", color: r.warnings.length ? "var(--chakra-colors-yellow-300)" : "var(--chakra-colors-muted)" }}>
+                                {r.warnings.length ? `${r.warnings.length}⚠` : "none"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </Box>
+                </Box>
+
+                {/* Per-scenario details */}
+                {scenarioOutput.results.map((r) => (
+                  <Box key={r.scenarioId} p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
+                    <Heading size="sm" mb={2}>{r.scenarioName}</Heading>
+                    <Text fontSize="xs" color="muted" mb={3}>{r.description}</Text>
+
+                    {/* Key assumptions */}
+                    {r.assumptions.macro.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>Macro assumptions</Text>
+                        <Flex wrap="wrap" gap={1}>
+                          {r.assumptions.macro.map((a) => (
+                            <Badge key={a.key} variant="outline" borderColor="accent.400" color="accent.300" fontSize="10px" px={1.5} py={0.5}>
+                              {a.key}: {fmtVal(a.value, a.unit)}
+                            </Badge>
+                          ))}
+                        </Flex>
+                      </Box>
+                    )}
+                    {r.assumptions.company.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>Company assumptions</Text>
+                        <Flex wrap="wrap" gap={1}>
+                          {r.assumptions.company.map((a) => (
+                            <Badge key={a.key} variant="outline" borderColor="blue.400" color="blue.300" fontSize="10px" px={1.5} py={0.5}>
+                              {a.key}: {fmtVal(a.value, a.unit)}
+                            </Badge>
+                          ))}
+                        </Flex>
+                      </Box>
+                    )}
+
+                    {/* Bridge */}
+                    {r.bridge.revenue && r.bridge.revenue.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>Revenue bridge</Text>
+                        {r.bridge.revenue.map((b) => (
+                          <Flex key={b.name} justify="space-between" fontSize="xs">
+                            <Text>{b.name}</Text>
+                            <Text fontFamily="mono" color="muted">
+                              {b.baseValue != null ? fmtRial(b.baseValue) : ""}{b.scenarioValue != null ? ` → ${fmtRial(b.scenarioValue)}` : ""}{b.delta != null ? ` (${b.delta >= 0 ? "+" : ""}${fmtRial(b.delta)})` : ""}
+                            </Text>
+                          </Flex>
+                        ))}
+                      </Box>
+                    )}
+                    {r.bridge.ebitda && r.bridge.ebitda.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>EBITDA bridge</Text>
+                        {r.bridge.ebitda.map((b) => (
+                          <Flex key={b.name} justify="space-between" fontSize="xs">
+                            <Text>{b.name}</Text>
+                            <Text fontFamily="mono" color="muted">
+                              {b.baseValue != null ? (b.unit === "%" ? `${b.baseValue.toFixed(1)}%` : fmtRial(b.baseValue)) : ""}
+                              {b.scenarioValue != null ? ` → ${b.unit === "%" ? `${b.scenarioValue.toFixed(1)}%` : fmtRial(b.scenarioValue)}` : ""}
+                              {b.delta != null ? ` (${b.delta >= 0 ? "+" : ""}${b.unit === "pp" ? `${b.delta.toFixed(1)}pp` : fmtRial(b.delta)})` : ""}
+                            </Text>
+                          </Flex>
+                        ))}
+                      </Box>
+                    )}
+
+                    {/* Sensitivity */}
+                    {r.sensitivity.discountRate.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>Sensitivity: discount rate</Text>
+                        <Flex wrap="wrap" gap={2}>
+                          {r.sensitivity.discountRate.map((s) => (
+                            <Badge key={s.discountRate} variant="outline" borderColor="borderC" fontSize="10px" px={1.5} py={0.5}>
+                              {(s.discountRate! * 100).toFixed(0)}% → {s.intrinsicValuePerShare != null ? fmtRial(s.intrinsicValuePerShare) : "—"}
+                            </Badge>
+                          ))}
+                        </Flex>
+                      </Box>
+                    )}
+                    {r.sensitivity.terminalGrowth.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>Sensitivity: terminal growth</Text>
+                        <Flex wrap="wrap" gap={2}>
+                          {r.sensitivity.terminalGrowth.map((s) => (
+                            <Badge key={s.terminalGrowth} variant="outline" borderColor="borderC" fontSize="10px" px={1.5} py={0.5}>
+                              {(s.terminalGrowth! * 100).toFixed(0)}% → {s.intrinsicValuePerShare != null ? fmtRial(s.intrinsicValuePerShare) : "—"}
+                            </Badge>
+                          ))}
+                        </Flex>
+                      </Box>
+                    )}
+                    {r.sensitivity.exitMultiple.length > 0 && (
+                      <Box mb={3}>
+                        <Text fontSize="xs" color="accent.300" fontWeight="semibold" mb={1}>Sensitivity: exit multiple</Text>
+                        <Flex wrap="wrap" gap={2}>
+                          {r.sensitivity.exitMultiple.map((s) => (
+                            <Badge key={s.exitMultiple} variant="outline" borderColor="borderC" fontSize="10px" px={1.5} py={0.5}>
+                              {s.exitMultiple}x → {s.intrinsicValuePerShare != null ? fmtRial(s.intrinsicValuePerShare) : "—"}
+                            </Badge>
+                          ))}
+                        </Flex>
+                      </Box>
+                    )}
+
+                    {r.warnings.length > 0 && (
+                      <Box>
+                        <Text fontSize="xs" color="yellow.300" fontWeight="semibold" mb={1}>Warnings</Text>
+                        {r.warnings.map((w, i) => (
+                          <Text key={i} fontSize="xs" color="yellow.200">⚠ {w}</Text>
+                        ))}
+                      </Box>
+                    )}
+                  </Box>
+                ))}
+
+                {scenarioOutput.warnings.length > 0 && (
+                  <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
+                    <Heading size="sm" mb={2} color="yellow.300">Global warnings</Heading>
+                    {scenarioOutput.warnings.map((w, i) => (
+                      <Text key={i} fontSize="xs" color="yellow.200">⚠ {w}</Text>
+                    ))}
+                  </Box>
+                )}
+              </>
+            )}
           </VStack>
         </TabsContent>
 
@@ -774,6 +1061,35 @@ function kindLabel(kind: string): string {
     case "disclosure": return "افشای اطلاعات با اهمیت";
     default: return kind || "report";
   }
+}
+
+/** Format a rial amount with thousand separators, or a short label for large amounts. */
+function fmtRial(v: number | undefined | null): string {
+  if (v == null || !isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e12) return `${(v / 1e12).toFixed(2)}T ریال`;
+  if (abs >= 1e9) return `${(v / 1e9).toFixed(2)}B ریال`;
+  if (abs >= 1e6) return `${(v / 1e6).toFixed(2)}M ریال`;
+  return v.toLocaleString("en-US") + " ریال";
+}
+
+/** Format an assumption value with its unit. */
+function fmtVal(v: number, unit: string): string {
+  if (unit === "%" || unit === "ratio") return `${(v * 100).toFixed(1)}%`;
+  if (unit === "pp") return `${(v * 100).toFixed(1)}pp`;
+  if (unit === "x") return `${v.toFixed(1)}x`;
+  if (unit === "0-1") return v.toFixed(2);
+  if (unit === "factor") return `${v.toFixed(2)}x`;
+  return `${v}`;
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <Box minW="120px" p={3} borderWidth="1px" borderColor="borderC" rounded="md" bg="bg">
+      <Text fontSize="xs" color="muted">{label}</Text>
+      <Text fontSize="sm" fontWeight="semibold" fontFamily="mono">{value}</Text>
+    </Box>
+  );
 }
 
 /** Parses the app's SSE (data: {"delta":…} … {"done":true, "id":…}). Mirrors components/Chat.tsx. */

@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
 
     const tRes = analyzeTechnical(tInputs);
     const f = loadFundamentalInputs(insCode);
-    const fRes = analyzeFundamental(f.inputs, f.prior);
+    const fRes = analyzeFundamental(f.inputs, f.prior, "rial");
     // The deterministic statement/report context the AI write-up hands the LLM —
     // surfaced here so the UI can show exactly what the synthesis model sees.
     const fctx = await loadFundamentalContext(insCode);

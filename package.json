@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "brain:test": "tsx brain/self-test.ts"
+    "brain:test": "tsx brain/self-test.ts",
+    "brain:test:scenarios": "tsx brain/scenarios.test.ts"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.36.1",

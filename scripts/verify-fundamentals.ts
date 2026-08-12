@@ -34,7 +34,7 @@ async function main() {
     const populated = Object.keys(f.inputs).filter((k) => f.inputs[k as keyof typeof f.inputs] !== undefined);
     console.log("   fy =", f.fy);
     console.log("   populated inputs:", populated.join(", ") || "(none)");
-    const fRes = analyzeFundamental(f.inputs, f.prior);
+    const fRes = analyzeFundamental(f.inputs, f.prior, "rial");
     console.log("   fundamental calcs:", fRes.calcs.map((c) => `${c.name}=${c.value}`).join(", ") || "(none)");
     console.log("   fundamental warnings:", fRes.warnings.join("; ") || "(none)");
   }

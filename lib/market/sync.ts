@@ -222,12 +222,25 @@ export async function syncCodalForSymbol(
     if (download && l.HasPdf && pdfUrl(l)) {
       try {
         const buf = await downloadPdf(pdfUrl(l)!);
-        const file = path.join(FILINGS_DIR, `${l.TracingNo}.pdf`);
-        fs.writeFileSync(file, Buffer.from(buf));
-        pdfPath = file;
-        // The PDF holds the narrative statement text (management notes, notes to
-        // accounts) that the line-item parser skips — keep it for the LLM context.
-        rawText = await extractPdfText(buf).catch(() => null);
+        // Codal sometimes returns HTTP 200 with an error page rendered as PDF
+        // (1-page file containing just "ERROR"). Validate the header and content.
+        const header = new Uint8Array(buf.slice(0, 5));
+        const isPdf = header[0] === 0x25 && header[1] === 0x50 && header[2] === 0x44 && header[3] === 0x46; // %PDF
+        if (!isPdf) {
+          console.warn("[sync] skipping non-PDF response for", l.TracingNo);
+        } else {
+          const text = await extractPdfText(buf).catch(() => null);
+          // If the only text is "ERROR" or similarly useless, Codal served an error page.
+          const trimmed = (text ?? "").replace(/\s+/g, " ").trim();
+          if (trimmed.length < 20 || /^ERROR$/i.test(trimmed)) {
+            console.warn("[sync] skipping error-page PDF for", l.TracingNo, "— content:", trimmed.slice(0, 60));
+          } else {
+            const file = path.join(FILINGS_DIR, `${l.TracingNo}.pdf`);
+            fs.writeFileSync(file, Buffer.from(buf));
+            pdfPath = file;
+            rawText = text;
+          }
+        }
       } catch (e) {
         console.error("[sync] statement pdf download failed", l.TracingNo, (e as Error).message);
       }
@@ -377,10 +390,23 @@ export async function syncImportantStatements(
     if (download && l.HasPdf && pdfUrl(l)) {
       try {
         const buf = await downloadPdf(pdfUrl(l)!);
-        const file = path.join(FILINGS_DIR, `${l.TracingNo}.pdf`);
-        fs.writeFileSync(file, Buffer.from(buf));
-        pdfPath = file;
-        rawText = await extractPdfText(Buffer.from(buf));
+        // Validate: Codal sometimes returns HTTP 200 with an error page as PDF.
+        const header = new Uint8Array(buf.slice(0, 5));
+        const isPdf = header[0] === 0x25 && header[1] === 0x50 && header[2] === 0x44 && header[3] === 0x46;
+        if (!isPdf) {
+          console.warn("[sync] skipping non-PDF response for report", l.TracingNo);
+        } else {
+          const text = await extractPdfText(Buffer.from(buf)).catch(() => null);
+          const trimmed = (text ?? "").replace(/\s+/g, " ").trim();
+          if (trimmed.length < 20 || /^ERROR$/i.test(trimmed)) {
+            console.warn("[sync] skipping error-page PDF for report", l.TracingNo);
+          } else {
+            const file = path.join(FILINGS_DIR, `${l.TracingNo}.pdf`);
+            fs.writeFileSync(file, Buffer.from(buf));
+            pdfPath = file;
+            rawText = text;
+          }
+        }
       } catch (e) {
         console.error("[sync] important report pdf download/extract failed", l.TracingNo, (e as Error).message);
       }

@@ -47,7 +47,7 @@ async function main() {
     const keys = Object.keys(f.inputs) as (keyof typeof f.inputs)[];
     console.log("    input keys populated:", keys.filter((k) => f.inputs[k] !== undefined).join(", ") || "(none)");
     if (f.inputs.netIncome != null) {
-      const fRes = analyzeFundamental(f.inputs, f.prior);
+      const fRes = analyzeFundamental(f.inputs, f.prior, "rial");
       console.log("    fundamental calcs:", fRes.calcs.map((c) => `${c.name}=${c.value.toFixed(2)}`).join(", ").slice(0, 300));
     }
   }

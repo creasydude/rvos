@@ -55,6 +55,27 @@ RVOS is a **three-stage analysis pipeline**:
 
 Every skipped calc is explained — e.g. *"P/E skipped: EPS ≤ 0 (company is loss-making)"* — so the output is always interpretable, never silent.
 
+### 🎯 Scenario analysis (`brain/scenarios.ts`)
+
+Deterministic macro-regime scenario engine — models how different economic environments flow through to company valuations.
+
+| Feature | Description |
+| --- | --- |
+| 4 preset scenarios | persistent-sanctions, partial-normalization, full-normalization, severe-deterioration |
+| Multi-year projections | Year 0 = base, years 1–5 with linearly interpolated adjustments |
+| DCF valuation | Reuses fundamental.ts DCF logic with scenario-specific rates |
+| Sensitivity tables | Discount rate, terminal growth, exit multiple — deterministic, not LLM |
+| Operating bridge | Revenue/EBITDA/FCF decomposition vs base case |
+| FX treatment | Explicit IRR/USD paths, USD-denominated intrinsic for rial companies |
+| Data provenance | Every assumption tagged as observed/user/scenario-preset/derived |
+| Probability weighting | Optional, never invented by LLM |
+
+```bash
+npm run brain:test:scenarios   # 115 assertions across 15 test groups
+```
+
+API: `GET /api/market/scenarios?symbol=فولاد` — returns 4 scenario results with projected financials, DCF, sensitivity, and bridge.
+
 ## 🛠️ Quick start
 
 > Requires **Node.js ≥ 22.5** (uses the built-in `node:sqlite` — no native modules).
@@ -96,11 +117,11 @@ curl "http://localhost:3000/api/market/analyze?symbol=%D9%81%D9%88%D9%84%D8%A7%D
 
 | Path | Purpose |
 | --- | --- |
-| `brain/` | Pure TypeScript models — fundamental & technical calcs, self-test |
+| `brain/` | Pure TypeScript models — fundamental, technical & scenario calcs, self-test |
 | `lib/market/` | Data engine — TSETMC/Codal clients, sync ETL, statement parser, Jalali calendar |
 | `lib/` | LLM adapter (OpenAI-compatible + SSE), prompts, analyze orchestration, SQLite |
-| `app/api/` | REST endpoints — chat, analyze, roles, endpoints, market sync |
-| `app/market/` | Iran Stocks Data UI |
+| `app/api/` | REST endpoints — chat, analyze, scenarios, roles, endpoints, market sync |
+| `app/market/` | Iran Stocks Data UI (gather, analyze, scenarios, education) |
 | `app/settings/` | Endpoint + role assignment UI |
 | `scripts/` | Dev harnesses — mock LLM server, E2E smoke tests, sync verifier |
 
@@ -108,6 +129,7 @@ curl "http://localhost:3000/api/market/analyze?symbol=%D9%81%D9%88%D9%84%D8%A7%D
 
 ```bash
 npm run brain:test                 # verifies all fundamental + technical math
+npm run brain:test:scenarios       # verifies scenario engine (115 assertions)
 node scripts/mock-llm.js           # local OpenAI-compatible SSE server (http://localhost:9999/v1)
 npx tsx scripts/verify-fundamentals.ts فولاد   # end-to-end market sync + parse check
 ```

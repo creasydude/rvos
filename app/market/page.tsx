@@ -121,6 +121,9 @@ export default function MarketPage() {
   const [scenarioSymbol, setScenarioSymbol] = useState("");
   const [scenarioOutput, setScenarioOutput] = useState<ScenarioOutput | null>(null);
   const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [thesisText, setThesisText] = useState("");
+  const [thesisBusy, setThesisBusy] = useState(false);
+  const [thesisId, setThesisId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -239,6 +242,33 @@ export default function MarketPage() {
       push("err", `✖ scenarios ${sym} threw: ${(e as Error).message}`);
     }
     setScenarioBusy(false);
+  };
+
+  const synthesizeThesis = async (sym: string) => {
+    if (thesisBusy) return;
+    setThesisBusy(true);
+    setThesisText("");
+    setThesisId(null);
+    push("info", `▶ synthesizing scenario thesis for ${sym} …`);
+    try {
+      const res = await fetch("/api/market/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: sym }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        push("err", `✖ synthesis ${sym}: ${data.error ?? res.status}`);
+        setThesisBusy(false);
+        return;
+      }
+      const { text, id } = await parseSSE(res, (d) => setThesisText((t) => t + d));
+      setThesisId(id ?? null);
+      push("ok", `✔ scenario thesis generated`);
+    } catch (e) {
+      push("err", `✖ synthesis threw: ${(e as Error).message}`);
+    }
+    setThesisBusy(false);
   };
 
   const runSync = async (payload: Record<string, unknown>, label: string) => {
@@ -746,6 +776,36 @@ export default function MarketPage() {
                     ))}
                   </Box>
                 )}
+
+                {/* AI Investment Thesis */}
+                <Box p={4} borderWidth="1px" borderColor="borderC" rounded="md" bg="surface">
+                  <Flex justify="space-between" align="center" mb={3}>
+                    <Heading size="sm">AI Investment Thesis</Heading>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      borderColor="accent.400"
+                      color="accent.300"
+                      disabled={thesisBusy || !scenarioSymbol.trim()}
+                      onClick={() => synthesizeThesis(scenarioSymbol.trim())}
+                    >
+                      {thesisBusy ? "Synthesizing…" : "Generate AI thesis"}
+                    </Button>
+                  </Flex>
+                  {thesisText && (
+                    <Box whiteSpace="pre-wrap" fontSize="sm" color="ink" lineHeight="tall">
+                      {thesisText}
+                    </Box>
+                  )}
+                  {thesisId && (
+                    <Flex mt={3} fontSize="xs" align="center" gap={2}>
+                      <Badge colorPalette="green">Saved</Badge>
+                      <Link href={`/?id=${thesisId}`} style={{ color: "#e8e8ec", textDecoration: "none", fontSize: "12px" }}>
+                        Open in chat ↗
+                      </Link>
+                    </Flex>
+                  )}
+                </Box>
               </>
             )}
           </VStack>

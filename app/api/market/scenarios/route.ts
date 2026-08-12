@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { resolveInsCode } from "@/lib/market/sync";
 import { loadFundamentalInputs } from "@/lib/market/load";
 import { runScenariosFromInputs } from "@/brain/scenarios";
+import { streamScenarioAnalysis } from "@/lib/market/scenario-writeup";
+import { saveAnalysis } from "@/lib/db";
 import type { ScenarioInput } from "@/brain/scenario-types";
 
 export const runtime = "nodejs";
@@ -73,4 +75,74 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     return Response.json({ ok: false, error: (e as Error).message }, { status: 502 });
   }
+}
+
+/**
+ * POST /api/market/scenarios
+ * Body: { symbol: string }
+ *
+ * Runs the scenario engine on synced data and streams an LLM-synthesized
+ * investment thesis.  Returns SSE (same protocol as /api/analyze) and
+ * persists the analysis for chat follow-up.
+ */
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const symbol = typeof body.symbol === "string" ? body.symbol.trim() : "";
+  if (!symbol) {
+    return Response.json({ ok: false, error: "symbol required" }, { status: 400 });
+  }
+
+  let result: { stream: ReadableStream<string>; context: { fundamental?: string; technical?: string; brain: string; ticker?: string } };
+  try {
+    result = await streamScenarioAnalysis(symbol);
+  } catch (e) {
+    console.error("SCENARIO SYNTHESIS THREW:", e);
+    return Response.json({ ok: false, error: (e as Error).message || "Synthesis failed" }, { status: 502 });
+  }
+
+  const { stream, context } = result;
+  const encoder = new TextEncoder();
+
+  const sse = new ReadableStream({
+    async start(controller) {
+      const reader = stream.getReader();
+      let full = "";
+      let savedId: string | undefined;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) full += value;
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta: value })}\n\n`));
+      }
+      try {
+        savedId = crypto.randomUUID();
+        saveAnalysis({
+          id: savedId,
+          ticker: context.ticker,
+          title: context.ticker ? `${context.ticker} scenario thesis` : "Scenario thesis",
+          kind: "analysis",
+          body: full,
+          fundamental: context.fundamental,
+          technical: context.technical,
+          brain: context.brain,
+          createdAt: Date.now(),
+        });
+      } catch (e) {
+        console.error("SAVE SCENARIO ANALYSIS THREW:", e);
+      }
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, id: savedId })}\n\n`));
+      controller.close();
+    },
+    cancel() {
+      stream.cancel?.().catch(() => {});
+    },
+  });
+
+  return new Response(sse, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
 }

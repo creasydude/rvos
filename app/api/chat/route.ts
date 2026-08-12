@@ -55,9 +55,21 @@ export async function POST(req: NextRequest) {
   // The system prompt carries the entire stock dataset; the conversation
   // messages are the prior Q&A (already grounded in that data) plus the new
   // question. The LLM only reasons in prose over the supplied numbers.
+  // The readable narrative is embedded in the fundamental JSON (market write-ups);
+  // surface it as its own labeled section so chat mines it like synthesis does.
+  let narrative: string | undefined;
+  if (analysis.fundamental?.trim()) {
+    try {
+      const f = JSON.parse(analysis.fundamental);
+      if (typeof f?.narrative === "string") narrative = f.narrative;
+    } catch {
+      /* not JSON — nothing to surface */
+    }
+  }
   const system = buildChatSystem({
     fundamental: analysis.fundamental,
     technical: analysis.technical,
+    narrative,
     brain: analysis.brain ?? "",
     writeup: analysis.body,
   });

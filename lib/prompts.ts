@@ -69,6 +69,7 @@ export function buildSynthesisPrompt(
   input: {
     fundamental: string; // serialized fundamental notes (JSON)
     technical: string; // serialized technical notes (JSON)
+    narrative?: string; // readable statement/disclosure excerpts to mine (market write-up)
     brain: string; // serialized brain calcs + warnings
     missing: string[]; // which side(s) are missing
   },
@@ -78,8 +79,11 @@ export function buildSynthesisPrompt(
   const missing = input.missing.length
     ? `\nWARNING: the following data is MISSING — say so explicitly and do not guess: ${input.missing.join(", ")}.`
     : "";
+  const narrativeDirective = input.narrative
+    ? `\nThe user message includes a "Statement & disclosures" section — verbatim excerpts from the company's own filings (line items, the periodic financial statement, and important disclosure letters). Use it as primary evidence: cite the specific facts it contains — amounts, appraised prices, transaction values, dates, what management, the auditor, or a disclosure actually said — to support each part of the write-up. Extract the decision-relevant substance; never recite boilerplate and never invent facts beyond what is written there.`
+    : "";
   const system = `${FRAMING}
-You write the final research write-up. All math was already done for you — every number you cite must come from the supplied brain output. Do not compute or transform any number yourself; just interpret.
+You write the final research write-up. All math was already done for you — every number you cite must come from the supplied brain output. Do not compute or transform any number yourself; just interpret.${narrativeDirective}
 
 Format the write-up as:
 1. "TL;DR" — 2-3 sentences.
@@ -93,7 +97,10 @@ Never present a single "this is the real value" number. When you cite a computed
 
 ${unitGuidance(units)}`;
 
-  const user = `Fundamental notes (JSON):\n${input.fundamental || "(none)"}\n\nTechnical notes (JSON):\n${input.technical || "(none)"}\n\nBrain calculations (JSON, already computed — trust these, do not recompute):\n${input.brain}${missing}\n\nWrite the analysis.`;
+  const narrative = input.narrative
+    ? `\n\nStatement & disclosures (verbatim excerpts from the company's filings — USE these):\n${input.narrative}`
+    : "";
+  const user = `Fundamental notes (JSON):\n${input.fundamental || "(none)"}${narrative}\n\nTechnical notes (JSON):\n${input.technical || "(none)"}\n\nBrain calculations (JSON, already computed — trust these, do not recompute):\n${input.brain}${missing}\n\nWrite the analysis.`;
   return { system, user };
 }
 
@@ -126,6 +133,7 @@ const RIAL_CHAT_NOTE = `\nNOTE: this dataset is denominated in Iranian rial (ر�
 export function buildChatSystem(ctx: {
   fundamental?: string;
   technical?: string;
+  narrative?: string;
   brain: string;
   writeup: string;
 }): string {
@@ -133,16 +141,23 @@ export function buildChatSystem(ctx: {
   if (ctx.fundamental?.trim()) {
     try {
       const f = JSON.parse(ctx.fundamental);
+      const hasNarrative = typeof f?.narrative === "string" && f.narrative.length > 0;
+      // Fall back to the embedded narrative inside the fundamental JSON when the
+      // caller didn't pass one separately (older persisted analyses).
+      if (ctx.narrative == null && hasNarrative) ctx.narrative = f.narrative;
       if (f && f.unitSystem === "rial") rialNote = RIAL_CHAT_NOTE;
     } catch {
       /* not JSON — leave the note off */
     }
   }
+  const narrativeBlock = ctx.narrative
+    ? `\nStatement & disclosures (verbatim excerpts from the company's filings — USE these when relevant):\n${ctx.narrative}`
+    : "";
   return `${CHAT_PREAMBLE}${rialNote}
 
 === STOCK DATA START ===
 Fundamental notes (JSON):
-${ctx.fundamental || "(none)"}
+${ctx.fundamental || "(none)"}${narrativeBlock}
 
 Technical notes (JSON):
 ${ctx.technical || "(none)"}

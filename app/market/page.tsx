@@ -592,14 +592,14 @@ function ModelCard({ name, formula, note }: { name: string; formula: string; not
 // ---- LLM fundamental context (the statement/report bundle the AI write-up uses) ----
 
 type FLineItem = { metric: string; label: string; value: number; fy: number };
-type FReport = { kind: string; title: string; published: string | null; excerpt: string };
+type FReport = { kind: string; title: string; published: string | null; excerpt: string; keyPoints?: string[] };
 type FContext = {
   symbol: string | null;
   name: string | null;
   fy: number | null;
   periodEnd: string | null;
   lineItems: FLineItem[];
-  statement: { title: string; periodEnd: string | null; excerpt: string } | null;
+  statement: { title: string; periodEnd: string | null; excerpt: string; rawLength?: number; keyPoints?: string[] } | null;
   reports: FReport[];
   units: string;
 };
@@ -622,11 +622,19 @@ function serializeContext(context: FContext): string {
 
   if (context.statement) {
     parts.push(`Statement — ${context.statement.title}${context.statement.periodEnd ? ` (${context.statement.periodEnd})` : ""}`);
+    if (context.statement.keyPoints?.length) {
+      parts.push("Key points:");
+      for (const kp of context.statement.keyPoints) parts.push(`- ${kp}`);
+    }
     parts.push(context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)");
   }
 
   for (const r of context.reports) {
     parts.push(`${kindLabel(r.kind)} — ${r.title}${r.published ? ` (${r.published})` : ""}`);
+    if (r.keyPoints?.length) {
+      parts.push("Key points:");
+      for (const kp of r.keyPoints) parts.push(`- ${kp}`);
+    }
     parts.push(r.excerpt || "(no text)");
   }
   return parts.join("\n");
@@ -685,9 +693,19 @@ function FundamentalContext({ context }: { context: FContext | null }) {
           <summary style={{ cursor: "pointer", marginTop: "6px" }}>
             Statement — {context.statement.title} {context.statement.periodEnd ? `(${context.statement.periodEnd})` : ""}
           </summary>
-          <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
-            {context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)"}
-          </Text>
+          <Box mt={1}>
+            {context.statement.keyPoints?.length ? (
+              <>
+                <Text color="accent.300" fontWeight="semibold">Key points</Text>
+                {context.statement.keyPoints.map((kp, i) => (
+                  <Text key={i} color="muted">• {kp}</Text>
+                ))}
+              </>
+            ) : null}
+            <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
+              {context.statement.excerpt || "(no narrative text stored — sync re-downloads the PDF)"}
+            </Text>
+          </Box>
         </details>
       ) : null}
 
@@ -696,9 +714,19 @@ function FundamentalContext({ context }: { context: FContext | null }) {
           <summary style={{ cursor: "pointer", marginTop: "6px" }}>
             {kindLabel(r.kind)} — {r.title} {r.published ? `(${r.published})` : ""}
           </summary>
-          <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
-            {r.excerpt || "(no text)"}
-          </Text>
+          <Box mt={1}>
+            {r.keyPoints?.length ? (
+              <>
+                <Text color="accent.300" fontWeight="semibold">Key points</Text>
+                {r.keyPoints.map((kp, i) => (
+                  <Text key={i} color="muted">• {kp}</Text>
+                ))}
+              </>
+            ) : null}
+            <Text mt={1} color="muted" whiteSpace="pre-wrap" maxH="200px" overflowY="auto">
+              {r.excerpt || "(no text)"}
+            </Text>
+          </Box>
         </details>
       ))}
     </Box>

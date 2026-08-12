@@ -58,6 +58,8 @@ export type FundamentalReportContext = {
   title: string;
   published: string | null;
   excerpt: string;
+  /** Deterministic key-point lines pulled from the report's own text. */
+  keyPoints: string[];
 };
 
 export type FundamentalContext = {
@@ -68,7 +70,15 @@ export type FundamentalContext = {
   /** Current fiscal year first, then prior — raw values in Iranian rial. */
   lineItems: FundamentalLineItem[];
   /** Latest periodic financial statement + its narrative excerpt. */
-  statement: { title: string; periodEnd: string | null; excerpt: string } | null;
+  statement: {
+    title: string;
+    periodEnd: string | null;
+    excerpt: string;
+    /** Char count of the raw text before clipping — lets the narrative renderer
+        skip the giant head+tail slices that land on auditor boilerplate. */
+    rawLength: number;
+    keyPoints: string[];
+  } | null;
   /** Up to 4 important reports, interpretive first. */
   reports: FundamentalReportContext[];
   units: "rial";
@@ -79,6 +89,108 @@ export function clipExcerpt(text: string | null | undefined, head = 2000, tail =
   const t = (text ?? "").replace(/\s+/g, " ").trim();
   if (t.length <= head + tail + 200) return t;
   return `${t.slice(0, head)}\n… [truncated] …\n${t.slice(-tail)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic "key points" digest.
+//
+// Codal PDF full-text is dominated by repeatable boilerplate — the independent
+// auditor's ISA-700 block ("بند مقدمه / مسئولیت / دامنه / اظهارنظر"), form
+// headers, subsidiary schedules — which adds noise without information. For the
+// LLM narrative we want the handful of lines that carry decision-relevant facts:
+// amounts, dates, percentages, and the accounting/operational keywords that mark
+// a substantive line (شرح رویداد، تسویه، ذخیره، رویدادهای بعد از تاریخ، اشخاص
+// وابسته …). The digest is pure string filtering — no LLM involved.
+// ---------------------------------------------------------------------------
+const KEYPOINT_SIGNAL_RE =
+  /[0-9۰-۹]|ریال|تومان|درصد|٪|مبلغ|تاریخ|قیمت|شرح|رویداد|وابسته|تسویه|ذخیره|مالیات|تضمین|تصویب|اعلام|بابت|سهام/;
+const MONEY_WORD_RE = /ریال|تومان|میلیارد|میلیون|هزار/;
+// Auditor-report structural labels — identical in every company's report.
+const BOILERPLATE_RE = /بند\s*(مقدمه|مسئولیت|دامنه|تاکید|اظهار)|اهداف\s*حسابرس|الزامات\s*حسابرسی/i;
+
+/**
+ * The informative lines of a filing, in document order, deduped and capped.
+ * Long sentences survive only when they carry a money word; everything else is
+ * boilerplate-shaped and skipped.
+ */
+export function digestFromText(text: string | null | undefined, maxLines = 12, maxLen = 96): string[] {
+  if (!text) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of String(text).split(/\n+/)) {
+    const line = raw.replace(/[ \t‌‏]+/g, " ").trim();
+    if (line.length < 10) continue;
+    if (!KEYPOINT_SIGNAL_RE.test(line)) continue;
+    if (BOILERPLATE_RE.test(line)) continue;
+    if (line.length > 220 && !MONEY_WORD_RE.test(line)) continue;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push(line.length > maxLen ? `${line.slice(0, maxLen)}…` : line);
+    if (out.length >= maxLines) break;
+  }
+  return out;
+}
+
+/** English section label per report kind — the LLM writes in English framing. */
+const KIND_EN: Record<string, string> = {
+  interpretive: "Management interpretive report",
+  board: "Board of directors report",
+  forecast: "Earnings forecast",
+  disclosure: "Material disclosure letter",
+  other: "Published report",
+};
+
+/**
+ * Render the deterministic context bundle as a readable markdown narrative —
+ * the labeled section the synthesis LLM is directed to mine, distinct from the
+ * numeric JSON it also receives. Line items appear once here (label = value rial
+ * · FY); statement/report excerpts are replaced by key-point digests when the
+ * raw text is huge so the prompt never fills with auditor boilerplate.
+ */
+export function renderNarrative(ctx: FundamentalContext): string {
+  const parts: string[] = [];
+
+  if (ctx.lineItems.length) {
+    parts.push("## Line items (from the financial statement, Iranian rial)");
+    const one = (it: FundamentalLineItem) =>
+      `- ${it.label} = ${it.value.toLocaleString("en-US")} ریال · FY ${it.fy}`;
+    // Current FY block then prior-FY block (lineItems are already desc-by-fy, then metric).
+    const fys = [...new Set(ctx.lineItems.map((l) => l.fy))].sort((a, b) => b - a);
+    for (const fy of fys) {
+      parts.push(`FY ${fy}:`);
+      for (const it of ctx.lineItems.filter((l) => l.fy === fy)) parts.push(one(it));
+    }
+  }
+
+  if (ctx.statement) {
+    parts.push("\n## Financial statement");
+    parts.push(`Title: ${ctx.statement.title}${ctx.statement.periodEnd ? ` — period ${ctx.statement.periodEnd}` : ""}`);
+    if (ctx.statement.keyPoints.length) {
+      parts.push("Key points (verbatim lines):");
+      for (const kp of ctx.statement.keyPoints) parts.push(`- ${kp}`);
+    }
+    // Huge statements (the audit report is ~85k chars of ISA boilerplate) add
+    // only the key points; moderate ones get their verbatim head+tail excerpt.
+    if (ctx.statement.rawLength <= 12000 && ctx.statement.excerpt) {
+      parts.push("Excerpt (verbatim):");
+      parts.push(ctx.statement.excerpt);
+    }
+  }
+
+  for (const r of ctx.reports) {
+    parts.push(`\n## ${KIND_EN[r.kind] ?? r.kind}`);
+    parts.push(`Title: ${r.title}${r.published ? ` — ${r.published}` : ""}`);
+    if (r.keyPoints.length) {
+      parts.push("Key points (verbatim lines):");
+      for (const kp of r.keyPoints) parts.push(`- ${kp}`);
+    }
+    if (r.excerpt) {
+      parts.push("Excerpt (verbatim):");
+      parts.push(r.excerpt);
+    }
+  }
+
+  return parts.join("\n");
 }
 
 function epochDate(ms: unknown): string | null {
@@ -148,6 +260,8 @@ export async function loadFundamentalContext(insCode: string): Promise<Fundament
     insCode,
   ) as { kind: string; title: string; published_at: number; raw_text: string }[];
 
+  const stmtRaw = typeof doc?.raw_text === "string" ? doc.raw_text : "";
+
   return {
     symbol: typeof inst?.symbol === "string" ? inst.symbol : null,
     name: typeof inst?.name === "string" ? inst.name : null,
@@ -158,14 +272,19 @@ export async function loadFundamentalContext(insCode: string): Promise<Fundament
       ? {
           title: typeof doc.title === "string" ? doc.title : "",
           periodEnd: typeof doc.period_end === "string" ? doc.period_end : null,
-          excerpt: clipExcerpt(typeof doc.raw_text === "string" ? doc.raw_text : "", 2000, 1200),
+          excerpt: clipExcerpt(stmtRaw, 2000, 1200),
+          rawLength: stmtRaw.length,
+          keyPoints: digestFromText(stmtRaw),
         }
       : null,
+    // Disclosure letters are short (~1-4k chars) and are literally the "key
+    // points" — keep their full text (generous cap) rather than truncating.
     reports: reportRows.map((r) => ({
       kind: r.kind,
       title: typeof r.title === "string" ? r.title : "",
       published: epochDate(r.published_at),
-      excerpt: clipExcerpt(r.raw_text, 1500, 800),
+      excerpt: clipExcerpt(r.raw_text, 2500, 1200),
+      keyPoints: digestFromText(r.raw_text, 10, 96),
     })),
     units: "rial",
   };

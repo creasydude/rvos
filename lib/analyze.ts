@@ -66,6 +66,8 @@ export type AnalysisContext = {
   fundamental?: string;
   /** Serialized technical notes JSON. */
   technical?: string;
+  /** Readable statement/disclosure narrative the prompt directs the LLM to mine. */
+  narrative?: string;
   /** Rendered brain calcs — the computed numbers the chat may cite. */
   brain: string;
   /** Ticker if the notes carried one. */
@@ -76,6 +78,7 @@ export async function streamAnalysis(
   input: {
     fundamental?: string;
     technical?: string;
+    narrative?: string;
   },
   opts?: { units?: UnitSystem },
 ): Promise<{ stream: ReadableStream<string>; context: AnalysisContext }> {
@@ -121,6 +124,7 @@ export async function streamAnalysis(
     {
       fundamental: fundamentalJson ?? "",
       technical: technicalJson ?? "",
+      narrative: input.narrative,
       brain,
       missing,
     },
@@ -133,6 +137,7 @@ export async function streamAnalysis(
     context: {
       fundamental: fundamentalJson ?? undefined,
       technical: technicalJson ?? undefined,
+      narrative: input.narrative,
       brain,
       ticker,
     },

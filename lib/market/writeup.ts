@@ -9,7 +9,7 @@
 
 import { streamAnalysis, type AnalysisContext } from "@/lib/analyze";
 import { loadTechnicalInputs, loadFundamentalInputs, latestClose } from "./load";
-import { loadFundamentalContext } from "./context";
+import { loadFundamentalContext, renderNarrative } from "./context";
 import { resolveInsCode } from "./sync";
 
 const MAX_TECHNICAL_BARS = 120; // cap the LLM's price series (~half a year of daily bars)
@@ -26,6 +26,11 @@ export async function streamMarketAnalysis(symbolOrCode: string): Promise<Market
   const tech = loadTechnicalInputs(insCode);
   const { inputs, prior, fy } = loadFundamentalInputs(insCode);
   const ctx = await loadFundamentalContext(insCode);
+
+  // Readable, labeled markdown of the line items + statement + disclosure reports
+  // — the section the synthesis prompt directs the LLM to mine. Stored alongside
+  // (inside) the fundamental JSON so follow-up chat sees it too.
+  const narrative = renderNarrative(ctx);
 
   const symbol = ctx.symbol ?? symbolOrCode;
   const last = latestClose(insCode) ?? inputs.price;
@@ -50,6 +55,10 @@ export async function streamMarketAnalysis(symbolOrCode: string): Promise<Market
   };
   if (prior && Object.keys(prior).length) fundamental.priorYear = prior;
   fundamental.statementContext = ctx;
+  // Readable markdown narrative, embedded so it persists with the analysis (chat
+  // re-reads it from the JSON); also passed separately to streamAnalysis so the
+  // synthesis prompt can present it as a labeled section, not a JSON field.
+  fundamental.narrative = narrative;
   fundamental.notes = [
     "All monetary figures are in Iranian rial (ریال); per-share values are rials per share.",
     ...(fy != null ? [`Fiscal year on file: ${ctx.periodEnd ?? String(fy)}`] : []),
@@ -59,6 +68,7 @@ export async function streamMarketAnalysis(symbolOrCode: string): Promise<Market
     {
       fundamental: JSON.stringify(fundamental),
       technical: JSON.stringify(technical),
+      narrative,
     },
     { units: "rial" },
   );
